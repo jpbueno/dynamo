@@ -53,7 +53,7 @@ The Dynamo Platform consists of several integrated components:
 
 ## 🚀 Installation Steps
 
-### Step 1: Prepare Your Environment
+### Step 1: Set Up Your Environment
 
 ```bash
 # Set your working directory
@@ -89,7 +89,7 @@ helm repo update
 helm search repo nvidia/dynamo-platform
 ```
 
-### Step 4: Prepare Configuration Values
+### Step 4: Configure Installation Values
 
 Create a custom values file for your deployment:
 
@@ -781,7 +781,7 @@ If you encounter issues during the workshop:
 
 ## 📝 Notes and Observations
 
-Use this section to document your findings during preparation:
+Use this section to document your findings during the workshop:
 
 ### Deployment Timeline
 - Deployment started: ________________
@@ -801,11 +801,11 @@ Use this section to document your findings during preparation:
 ---
 
 **Document Version:** 1.0  
-**Last Updated:** October 30, 2025  
-**Prepared for:** Friday, November 7, 2025 Workshop  
+**Last Updated:** November 7, 2025  
+**Workshop Date:** Friday, November 7, 2025  
 **Platform Version:** NVIDIA Dynamo Platform v0.6.0
 
 ---
 
-Good luck with your workshop preparation! 🚀
+Thank you for participating in the workshop! 🚀
 

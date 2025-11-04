@@ -1,10 +1,10 @@
-# NVIDIA Dynamo Platform - Workshop Preparation Kit
+# NVIDIA Dynamo Platform - Workshop
 
-Welcome! This repository contains everything you need to prepare for the **NVIDIA Dynamo Platform Workshop** on **Friday, November 7, 2025**.
+Welcome! This repository contains everything you need for the **NVIDIA Dynamo Platform Workshop**.
 
 ## 📦 What's Included
 
-This preparation kit contains:
+This workshop contains:
 
 1. **DYNAMO_WORKSHOP_GUIDE.md** - Comprehensive step-by-step installation and configuration guide
 2. **QUICK_REFERENCE.md** - Quick reference card with essential commands
@@ -27,31 +27,31 @@ helm version
 open DYNAMO_WORKSHOP_GUIDE.md  # or use your preferred markdown viewer
 ```
 
-### Recommended Preparation Steps
+### Workshop Structure
 
-1. **Week Before Workshop** (This Week)
-   - [ ] Read through `DYNAMO_WORKSHOP_GUIDE.md` (30 minutes)
-   - [ ] Set up your Kubernetes cluster
-   - [ ] Verify you have all required access and permissions
-   - [ ] Install the Dynamo Platform following the guide
+1. **Prerequisites Check** (10 minutes)
+   - [ ] Verify Kubernetes cluster access
+   - [ ] Check kubectl and Helm installation
+   - [ ] Ensure you have required permissions
+   - [ ] Review system requirements
 
-2. **3-4 Days Before Workshop**
-   - [ ] Run the health check: `./check-dynamo-health.sh`
-   - [ ] Practice troubleshooting any issues
-   - [ ] Test deploying sample workloads
-   - [ ] Familiarize yourself with the quick reference
+2. **Platform Installation** (30 minutes)
+   - [ ] Follow the installation guide in `DYNAMO_WORKSHOP_GUIDE.md`
+   - [ ] Install the Dynamo Platform using Helm
+   - [ ] Verify all components are running
+   - [ ] Run health check: `./check-dynamo-health.sh`
 
-3. **Day Before Workshop**
-   - [ ] Verify all components are still healthy
-   - [ ] Review the architecture overview
-   - [ ] Bookmark the quick reference
-   - [ ] Prepare questions for your instructor
+3. **Hands-On Exercises** (60 minutes)
+   - [ ] Deploy sample workloads
+   - [ ] Explore component interactions
+   - [ ] Practice troubleshooting scenarios
+   - [ ] Test advanced features
 
-4. **Workshop Day**
-   - [ ] Run final health check
-   - [ ] Have the quick reference open
-   - [ ] Keep the health check script running
-   - [ ] Be ready to learn! 🎓
+4. **Workshop Wrap-up** (20 minutes)
+   - [ ] Review key concepts
+   - [ ] Q&A session
+   - [ ] Access additional resources
+   - [ ] Next steps and practice recommendations
 
 ## 📚 Document Overview
 
@@ -70,7 +70,7 @@ open DYNAMO_WORKSHOP_GUIDE.md  # or use your preferred markdown viewer
 - Architecture overview
 - Workshop exercises
 
-**When to Use:** During initial setup and when you need detailed explanations
+**When to Use:** During the workshop installation phase and when you need detailed explanations
 
 ### QUICK_REFERENCE.md
 
@@ -184,7 +184,7 @@ Based on the deployment analysis, be aware of:
 
 ## 🎓 Workshop Topics
 
-The workshop will likely cover:
+This workshop covers:
 
 1. **Platform Overview** (15 min)
    - Architecture and components
@@ -269,53 +269,49 @@ kubectl delete namespace dynamo-system
 
 ## 🆘 Getting Help
 
-### Before the Workshop
-- Review the troubleshooting section in the workshop guide
-- Check NVIDIA Developer Forums
-- Reach out to your workshop instructor
-
 ### During the Workshop
 - Ask your instructor
 - Collaborate with other participants
 - Use the quick reference guide
+- Review the troubleshooting section in the workshop guide
 
 ### After the Workshop
 - NVIDIA Developer Forums
 - Internal NVIDIA Slack: #dynamo-platform
 - GitHub Issues for specific components
+- Reference the quick reference guide for common commands
 
-## ✅ Final Checklist
+## ✅ Workshop Checklist
 
-Before the workshop, make sure:
+During the workshop, you will:
 
-- [ ] I've read the complete workshop guide
-- [ ] I can access my Kubernetes cluster
-- [ ] kubectl and helm are installed and working
-- [ ] I've successfully installed the Dynamo Platform
-- [ ] All components show as healthy
-- [ ] I've tested deploying a sample workload
-- [ ] I'm familiar with the quick reference commands
-- [ ] I've practiced troubleshooting common issues
-- [ ] I know where to find help during the workshop
-- [ ] I'm excited and ready to learn! 🚀
+- [ ] Access your Kubernetes cluster
+- [ ] Verify kubectl and helm are installed and working
+- [ ] Install the Dynamo Platform using Helm
+- [ ] Verify all components are healthy
+- [ ] Deploy sample workloads
+- [ ] Use the quick reference commands
+- [ ] Practice troubleshooting common issues
+- [ ] Learn about advanced features and best practices
+- [ ] Complete hands-on exercises
 
-## 📅 Important Dates
+## 📅 Workshop Information
 
-- **Today:** October 30, 2025 (Wednesday) - Start preparation
-- **Workshop:** November 7, 2025 (Friday) - Be ready!
-- **Suggested Preparation Time:** 2-3 hours over the next week
+- **Workshop Date:** November 7, 2025 (Friday)
+- **Duration:** ~2 hours
+- **Format:** Hands-on guided workshop
 
-## 🎉 You're All Set!
+## 🎉 Welcome to the Workshop!
 
-You now have everything you need to successfully prepare for the workshop. Follow the guides, practice the commands, and don't hesitate to experiment with the platform.
+You now have everything you need to successfully complete this workshop. Follow the guides, execute the commands, and don't hesitate to experiment with the platform.
 
-**Pro Tip:** The best way to learn is by doing. Don't just read the guides—actually install the platform, break things, fix them, and understand how everything works together.
+**Pro Tip:** The best way to learn is by doing. Don't just read the guides—actually install the platform, experiment with workloads, troubleshoot issues, and understand how everything works together.
 
-Good luck with your preparation! See you at the workshop! 🚀
+Let's get started! 🚀
 
 ---
 
-**Last Updated:** October 30, 2025  
+**Last Updated:** November 7, 2025  
 **Workshop Date:** Friday, November 7, 2025  
 **Platform Version:** NVIDIA Dynamo v0.6.0
 
@@ -323,11 +319,12 @@ Good luck with your preparation! See you at the workshop! 🚀
 
 ## 🙋 Questions?
 
-If you have questions during preparation:
-1. Check the troubleshooting section in `DYNAMO_WORKSHOP_GUIDE.md`
-2. Review the quick reference in `QUICK_REFERENCE.md`
-3. Run `./check-dynamo-health.sh` to diagnose issues
-4. Reach out to your workshop instructor
+If you have questions during the workshop:
+1. Ask your instructor or workshop facilitator
+2. Check the troubleshooting section in `DYNAMO_WORKSHOP_GUIDE.md`
+3. Review the quick reference in `QUICK_REFERENCE.md`
+4. Run `./check-dynamo-health.sh` to diagnose issues
+5. Collaborate with other participants
 
 Happy learning! 📚
 

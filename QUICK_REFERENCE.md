@@ -398,7 +398,7 @@ kubectl logs -n dynamo-system -l app.kubernetes.io/name=dynamo-operator --tail=2
 - Use aliases: `alias k=kubectl` and `alias kgp='kubectl get pods -n dynamo-system'`
 - Keep the health check script running in a separate terminal
 - Bookmark this file for quick reference during the workshop
-- Practice the troubleshooting commands before the workshop day
+- Practice the troubleshooting commands during the workshop
 
 **Workshop Date:** Friday, November 7, 2025  
 **Good luck!** 🚀
