@@ -1,6 +1,35 @@
 # NVIDIA Dynamo Platform - Workshop
 
-Welcome! This repository contains everything you need for the **NVIDIA Dynamo Platform Workshop**.
+> A hands-on workshop for deploying, managing, and operating the NVIDIA Dynamo Platform—a comprehensive AI/ML orchestration solution for Kubernetes clusters.
+
+## 📖 Description
+
+This workshop provides a complete, hands-on learning experience for the **NVIDIA Dynamo Platform v0.6.0**, an enterprise-grade AI/ML orchestration platform designed to simplify the deployment and management of distributed inference workloads at scale.
+
+### What You'll Learn
+
+- **Platform Architecture**: Understand the core components and how they work together
+- **Deployment**: Master Helm-based installation and configuration
+- **Workload Management**: Deploy and manage AI inference workloads effectively
+- **Advanced Scheduling**: Leverage the KAI scheduler for optimized AI/ML workload placement
+- **Multi-Node Inference**: Use the Grove operator for distributed inference scenarios
+- **Operations**: Monitor, troubleshoot, and maintain a production-ready deployment
+
+### Who Should Attend
+
+- DevOps engineers working with Kubernetes and AI/ML workloads
+- Platform engineers building AI infrastructure
+- Data scientists and ML engineers deploying inference workloads
+- Anyone interested in modern AI/ML orchestration platforms
+
+### Workshop Outcomes
+
+By the end of this workshop, you will:
+- ✅ Have a fully functional Dynamo Platform deployment
+- ✅ Understand the platform's architecture and components
+- ✅ Be able to deploy and manage AI inference workloads
+- ✅ Know how to troubleshoot common issues
+- ✅ Have hands-on experience with production-ready AI infrastructure
 
 ## 📦 What's Included
 
