@@ -307,7 +307,62 @@ kubectl get crds | grep grove
 
 ## ⚠️ Known Issues and Troubleshooting
 
-### Issue 1: Dynamo Operator Restart Loop
+### Issue 1: Helm Repository Error - "No Space Left on Device"
+
+**Symptoms:**
+- Error when running `helm repo add nvidia https://helm.ngc.nvidia.com/nvidia`
+- Error message: `write /home/<user>/.cache/helm/repository/nvidia-index.yaml: no space left on device`
+- May also see warnings about insecure kubeconfig file permissions
+
+**Diagnosis:**
+
+```bash
+# Check disk space
+df -h /home
+
+# Check Helm cache size
+du -sh ~/.cache/helm
+
+# Check what's using space in Helm cache
+du -sh ~/.cache/helm/* | sort -h
+```
+
+**Solutions:**
+
+```bash
+# Solution 1: Clean Helm cache (recommended)
+helm repo remove nvidia 2>/dev/null || true
+rm -rf ~/.cache/helm/repository/nvidia-index.yaml
+rm -rf ~/.cache/helm/repository/cache/*.tgz  # Remove old chart packages
+helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+
+# Solution 2: Free up disk space
+# Check largest directories
+du -h --max-depth=1 ~ | sort -h | tail -10
+
+# Clean up Docker if installed (optional)
+docker system prune -a --volumes 2>/dev/null || true
+
+# Clean up old Helm repositories
+helm repo list
+helm repo remove <unused-repo>  # Remove unused repos
+
+# Solution 3: Move Helm cache to a different location with more space
+# (if you have access to another disk)
+export HELM_CACHE_HOME=/path/to/larger/disk/.cache/helm
+mkdir -p $HELM_CACHE_HOME
+helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+
+# Fix kubeconfig permissions (security warning)
+chmod 600 ~/.kube/config
+```
+
+**Prevention:**
+- Regularly clean Helm cache: `rm -rf ~/.cache/helm/repository/cache/*.tgz`
+- Monitor disk usage: `df -h`
+- Remove unused Helm repositories
+
+### Issue 2: Dynamo Operator Restart Loop
 
 **Symptoms:**
 - Operator pod shows `CrashLoopBackOff` or `Back-off restarting failed container`
