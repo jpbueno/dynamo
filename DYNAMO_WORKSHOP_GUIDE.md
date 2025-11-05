@@ -66,15 +66,25 @@ kubectl cluster-info
 helm version
 ```
 
-### Step 2: Create the Namespace
+### Step 2: Pre-Installation Check and Create Namespace
+
+**Important:** Before installing, check if there are existing Dynamo operators in your cluster. If you have namespace-restricted operators in other namespaces, you'll need to install this operator in namespace-restricted mode.
 
 ```bash
+# Check for existing Dynamo installations
+helm list -A | grep dynamo
+
+# Check for existing Dynamo operators in other namespaces
+kubectl get deployments -A | grep dynamo-operator
+
 # Create the dynamo-system namespace
 kubectl create namespace dynamo-system
 
 # Set it as your default context (optional)
 kubectl config set-context --current --namespace=dynamo-system
 ```
+
+**Note:** If you find existing namespace-restricted Dynamo operators (e.g., in `dynamo-cloud` namespace), you'll need to install this operator in namespace-restricted mode. See Step 5 for details.
 
 ### Step 3: Prepare for Chart Installation
 
@@ -102,34 +112,38 @@ cat > dynamo-values.yaml <<EOF
 # Version: 0.6.0
 
 # Dynamo Operator Configuration
-dynamoOperator:
+# Note: Use hyphens (dynamo-operator) not camelCase (dynamoOperator)
+dynamo-operator:
   enabled: true
-  image:
-    repository: nvcr.io/nvidia/ai-dynamo/kubernetes-operator
-    tag: 0.6.0
-  resources:
-    limits:
-      cpu: 1024m
-      memory: 2Gi
-    requests:
-      cpu: 100m
-      memory: 128Mi
+  # Set namespaceRestriction.enabled=true if other namespace-restricted operators exist
+  namespaceRestriction:
+    enabled: false  # Set to true if you have existing namespace-restricted operators
+  manager:
+    image:
+      repository: nvcr.io/nvidia/ai-dynamo/kubernetes-operator
+      tag: 0.6.0
+  controllerManager:
+    resources:
+      limits:
+        cpu: 1024m
+        memory: 2Gi
+      requests:
+        cpu: 100m
+        memory: 128Mi
   mpi:
     sshKeyGeneration: true
 
 # etcd Configuration
+# Important: Use bitnamilegacy/etcd per Bitnami brownout notice
 etcd:
   enabled: true
   replicaCount: 1  # Use 3 for production HA
   image:
-    repository: docker.io/bitnami/etcd
+    repository: bitnamilegacy/etcd
     tag: 3.5.18-debian-12-r5
   persistence:
     enabled: true
     size: 1Gi
-  service:
-    clientPort: 2379
-    peerPort: 2380
 
 # NATS Messaging Configuration
 nats:
@@ -142,36 +156,15 @@ nats:
     enabled: true
     storage:
       size: 10Gi
-  service:
-    port: 4222
-    monitorPort: 8222
 
 # KAI Scheduler Configuration
-kaiScheduler:
+# Note: Use hyphens (kai-scheduler) not camelCase (kaiScheduler)
+kai-scheduler:
   enabled: true
-  version: v0.9.4
-  components:
-    scheduler:
-      enabled: true
-    operator:
-      enabled: true
-    binder:
-      enabled: true
-    admission:
-      enabled: true
-    podGrouper:
-      enabled: true
-    queueController:
-      enabled: true
-    podGroupController:
-      enabled: true
 
 # Grove Operator Configuration
 grove:
   enabled: true
-  image:
-    repository: ghcr.io/nvidia/grove/grove-operator
-    tag: v0.1.0-alpha.3
 
 # Monitoring Configuration
 monitoring:
@@ -195,19 +188,50 @@ helm fetch https://helm.ngc.nvidia.com/nvidia/ai-dynamo/charts/dynamo-platform-$
 # Verify the chart was downloaded
 ls -lh dynamo-platform-${RELEASE_VERSION}.tgz
 
-# Install the Dynamo Platform using the local chart file
-helm install dynamo-platform dynamo-platform-${RELEASE_VERSION}.tgz \
-  --namespace dynamo-system \
-  --create-namespace \
-  --values dynamo-values.yaml \
-  --wait \
-  --timeout 10m
+# Check if you need namespace-restricted mode (from Step 2)
+EXISTING_OPERATORS=$(kubectl get deployments -A | grep dynamo-operator | grep -v dynamo-system | wc -l)
+
+if [ "$EXISTING_OPERATORS" -gt 0 ]; then
+  echo "⚠️  Found existing namespace-restricted operators. Installing in namespace-restricted mode..."
+  # Install with namespace restriction enabled
+  helm install dynamo-platform dynamo-platform-${RELEASE_VERSION}.tgz \
+    --namespace dynamo-system \
+    --create-namespace \
+    --values dynamo-values.yaml \
+    --set dynamo-operator.namespaceRestriction.enabled=true \
+    --wait \
+    --timeout 15m
+else
+  echo "✅ No existing operators found. Installing in cluster-wide mode..."
+  # Install normally (cluster-wide)
+  helm install dynamo-platform dynamo-platform-${RELEASE_VERSION}.tgz \
+    --namespace dynamo-system \
+    --create-namespace \
+    --values dynamo-values.yaml \
+    --wait \
+    --timeout 15m
+fi
 
 # Expected output:
 # NAME: dynamo-platform
 # NAMESPACE: dynamo-system
 # STATUS: deployed
 # REVISION: 1
+```
+
+**Troubleshooting Installation:**
+
+If you encounter the error: `Cannot install cluster-wide Dynamo operator. Found existing namespace-restricted Dynamo operators...`
+
+This means you have existing namespace-restricted operators. Install with:
+```bash
+helm install dynamo-platform dynamo-platform-${RELEASE_VERSION}.tgz \
+  --namespace dynamo-system \
+  --create-namespace \
+  --values dynamo-values.yaml \
+  --set dynamo-operator.namespaceRestriction.enabled=true \
+  --wait \
+  --timeout 15m
 ```
 
 **Note:** If you encounter authentication errors when fetching the chart, you may need to authenticate with NGC:
@@ -473,7 +497,36 @@ kubectl delete namespace dynamo-system
 # Wait 30 seconds, then repeat installation from Step 2
 ```
 
-### Issue 4: etcd Not Starting
+### Issue 4: etcd ImagePullBackOff
+
+**Symptoms:**
+- etcd pod shows `ImagePullBackOff` status
+- Error: `docker.io/docker.io/bitnami/etcd` (double docker.io)
+
+**Cause:**
+The etcd image repository in values.yaml incorrectly includes `docker.io/` prefix, causing Helm to add it twice.
+
+**Solution:**
+
+Update your `dynamo-values.yaml` to use the correct repository:
+```yaml
+etcd:
+  image:
+    repository: bitnamilegacy/etcd  # Correct: no docker.io prefix
+    tag: 3.5.18-debian-12-r5
+```
+
+**Note:** Use `bitnamilegacy/etcd` per Bitnami's brownout notice for etcd images.
+
+Then upgrade the installation:
+```bash
+helm upgrade dynamo-platform dynamo-platform-0.6.0.tgz \
+  --namespace dynamo-system \
+  --values dynamo-values.yaml \
+  --set dynamo-operator.namespaceRestriction.enabled=true
+```
+
+### Issue 5: etcd Not Starting (Other Issues)
 
 **Diagnosis:**
 
@@ -500,7 +553,7 @@ kubectl get storageclass
 kubectl describe pvc -n dynamo-system
 ```
 
-### Issue 5: NATS Connection Issues
+### Issue 6: NATS Connection Issues
 
 **Diagnosis:**
 

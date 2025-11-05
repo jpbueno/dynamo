@@ -1,287 +1,59 @@
 # NVIDIA Dynamo Platform Configuration
 # Version: 0.6.0
-# Workshop Date: November 7, 2025
 
-# This file contains the recommended configuration for the workshop
-# Modify as needed for your specific environment
-
-# ==============================================================================
 # Dynamo Operator Configuration
-# Core controller for managing Dynamo workloads
-# ==============================================================================
-dynamoOperator:
+dynamo-operator:
   enabled: true
-  image:
-    repository: nvcr.io/nvidia/ai-dynamo/kubernetes-operator
-    tag: 0.6.0
-    pullPolicy: IfNotPresent
-  
-  resources:
-    limits:
-      cpu: 1024m
-      memory: 2Gi
-    requests:
-      cpu: 100m
-      memory: 128Mi
-  
-  # MPI Support for distributed training
+  namespaceRestriction:
+    enabled: true  # Required if other namespace-restricted operators exist
+  manager:
+    image:
+      repository: nvcr.io/nvidia/ai-dynamo/kubernetes-operator
+      tag: 0.6.0
+  controllerManager:
+    resources:
+      limits:
+        cpu: 1024m
+        memory: 2Gi
+      requests:
+        cpu: 100m
+        memory: 128Mi
   mpi:
     sshKeyGeneration: true
-  
-  # Logging configuration
-  logLevel: info  # Options: debug, info, warn, error
 
-# ==============================================================================
 # etcd Configuration
-# Distributed key-value store for state management
-# ==============================================================================
 etcd:
   enabled: true
   replicaCount: 1  # Use 3 for production HA
-  
   image:
-    repository: docker.io/bitnami/etcd
+    repository: bitnamilegacy/etcd  # Use legacy repo per Bitnami brownout notice
     tag: 3.5.18-debian-12-r5
-    pullPolicy: IfNotPresent
-  
   persistence:
     enabled: true
     size: 1Gi
-    # storageClass: ""  # Uncomment to specify storage class
-  
-  service:
-    type: ClusterIP
-    clientPort: 2379
-    peerPort: 2380
-  
-  resources:
-    limits:
-      cpu: 500m
-      memory: 512Mi
-    requests:
-      cpu: 100m
-      memory: 128Mi
 
-# ==============================================================================
-# NATS Configuration
-# High-performance messaging system with JetStream
-# ==============================================================================
+# NATS Messaging Configuration
 nats:
   enabled: true
   replicaCount: 1  # Use 3 for production HA
-  
   image:
     repository: nats
     tag: 2.10.21-alpine
-    pullPolicy: IfNotPresent
-  
-  # JetStream for persistent messaging
   jetstream:
     enabled: true
     storage:
       size: 10Gi
-      # storageClass: ""  # Uncomment to specify storage class
-  
-  service:
-    type: ClusterIP
-    port: 4222
-    monitorPort: 8222
-  
-  resources:
-    limits:
-      cpu: 500m
-      memory: 512Mi
-    requests:
-      cpu: 100m
-      memory: 128Mi
 
-# ==============================================================================
 # KAI Scheduler Configuration
-# Advanced Kubernetes AI workload scheduler
-# ==============================================================================
-kaiScheduler:
+kai-scheduler:
   enabled: true
-  version: v0.9.4
-  
-  # Enable all KAI components
-  components:
-    # Main scheduler
-    scheduler:
-      enabled: true
-      resources:
-        limits:
-          cpu: 500m
-          memory: 512Mi
-        requests:
-          cpu: 100m
-          memory: 128Mi
-    
-    # KAI operator
-    operator:
-      enabled: true
-      resources:
-        limits:
-          cpu: 200m
-          memory: 256Mi
-        requests:
-          cpu: 50m
-          memory: 64Mi
-    
-    # Pod binder
-    binder:
-      enabled: true
-      resources:
-        limits:
-          cpu: 200m
-          memory: 256Mi
-        requests:
-          cpu: 50m
-          memory: 64Mi
-    
-    # Admission controller
-    admission:
-      enabled: true
-      resources:
-        limits:
-          cpu: 200m
-          memory: 256Mi
-        requests:
-          cpu: 50m
-          memory: 64Mi
-    
-    # Pod grouper
-    podGrouper:
-      enabled: true
-      resources:
-        limits:
-          cpu: 200m
-          memory: 256Mi
-        requests:
-          cpu: 50m
-          memory: 64Mi
-    
-    # Queue controller
-    queueController:
-      enabled: true
-      resources:
-        limits:
-          cpu: 200m
-          memory: 256Mi
-        requests:
-          cpu: 50m
-          memory: 64Mi
-    
-    # Pod group controller
-    podGroupController:
-      enabled: true
-      resources:
-        limits:
-          cpu: 200m
-          memory: 256Mi
-        requests:
-          cpu: 50m
-          memory: 64Mi
 
-# ==============================================================================
 # Grove Operator Configuration
-# Multi-node inference orchestration
-# ==============================================================================
 grove:
   enabled: true
-  
-  image:
-    repository: ghcr.io/nvidia/grove/grove-operator
-    tag: v0.1.0-alpha.3
-    pullPolicy: IfNotPresent
-  
-  resources:
-    limits:
-      cpu: 500m
-      memory: 512Mi
-    requests:
-      cpu: 100m
-      memory: 128Mi
 
-# ==============================================================================
 # Monitoring Configuration
-# Prometheus integration for metrics
-# ==============================================================================
 monitoring:
   prometheus:
     enabled: true
     podMonitor: true
-  
-  # Metrics configuration
-  metrics:
-    enabled: true
-    port: 8080
-
-# ==============================================================================
-# Security Configuration
-# ==============================================================================
-security:
-  # Pod Security Standards
-  podSecurityPolicy:
-    enabled: false  # Set to true if PSP is enabled in your cluster
-  
-  # Service Account configuration
-  serviceAccount:
-    create: true
-    annotations: {}
-    # name: dynamo-operator
-
-# ==============================================================================
-# RBAC Configuration
-# ==============================================================================
-rbac:
-  create: true
-
-# ==============================================================================
-# Additional Configuration
-# ==============================================================================
-
-# Node selector for all components (optional)
-# nodeSelector: {}
-
-# Tolerations for all components (optional)
-# tolerations: []
-
-# Affinity rules for all components (optional)
-# affinity: {}
-
-# Global image pull secrets (if needed)
-# imagePullSecrets:
-#   - name: nvidia-registry-secret
-
-# ==============================================================================
-# Notes:
-# 
-# 1. Storage Classes:
-#    - If your cluster has multiple storage classes, uncomment and specify
-#      the storageClass parameters for etcd and NATS
-#
-# 2. High Availability:
-#    - For production, set etcd.replicaCount: 3 and nats.replicaCount: 3
-#
-# 3. Resources:
-#    - Adjust resource requests/limits based on your workload requirements
-#    - The values above are suitable for workshop/testing environments
-#
-# 4. Networking:
-#    - All services use ClusterIP by default
-#    - For external access, change service types to LoadBalancer or NodePort
-#
-# 5. Security:
-#    - Enable PSP if your cluster requires it
-#    - Configure imagePullSecrets if accessing private registries
-#
-# ==============================================================================
-
-# Installation command:
-# helm install dynamo-platform nvidia/dynamo-platform \
-#   --namespace dynamo-system \
-#   --version 0.6.0 \
-#   --values dynamo-values.yaml \
-#   --wait \
-#   --timeout 10m
-
