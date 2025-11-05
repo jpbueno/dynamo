@@ -56,8 +56,8 @@ The Dynamo Platform consists of several integrated components:
 ### Step 1: Set Up Your Environment
 
 ```bash
-# Set your working directory
-cd /Users/jbuenosantan/Library/CloudStorage/OneDrive-NVIDIACorporation/NVIDIA/Inference/dynamo
+# Set your working directory (adjust to your preference)
+cd ~/dynamo  # or clone the repo: git clone https://github.com/jpbueno/dynamo.git
 
 # Verify kubectl is working
 kubectl cluster-info
@@ -76,17 +76,20 @@ kubectl create namespace dynamo-system
 kubectl config set-context --current --namespace=dynamo-system
 ```
 
-### Step 3: Add NVIDIA Helm Repository
+### Step 3: Prepare for Chart Installation
+
+**Important:** The Dynamo Platform chart is not available through the standard Helm repository search. It must be fetched directly from NGC's chart registry.
 
 ```bash
-# Add the NVIDIA Helm repository
-helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+# Set the release version
+export RELEASE_VERSION=0.6.0
 
-# Update your Helm repositories
+# Optional: Add NVIDIA Helm repository (for other NVIDIA charts)
+helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
 helm repo update
 
-# Verify the dynamo-platform chart is available
-helm search repo nvidia/dynamo-platform
+# Note: The dynamo-platform chart is not searchable via helm search repo
+# We will fetch it directly in Step 5
 ```
 
 ### Step 4: Configure Installation Values
@@ -178,13 +181,24 @@ monitoring:
 EOF
 ```
 
-### Step 5: Install the Dynamo Platform
+### Step 5: Fetch and Install the Dynamo Platform
+
+**Important:** The Dynamo Platform chart must be fetched directly from NGC's chart registry, as it's not available through the standard Helm repository.
 
 ```bash
-# Install the Dynamo Platform using Helm
-helm install dynamo-platform nvidia/dynamo-platform \
+# Ensure RELEASE_VERSION is set (from Step 3)
+export RELEASE_VERSION=0.6.0
+
+# Fetch the Dynamo Platform chart directly from NGC
+helm fetch https://helm.ngc.nvidia.com/nvidia/ai-dynamo/charts/dynamo-platform-${RELEASE_VERSION}.tgz
+
+# Verify the chart was downloaded
+ls -lh dynamo-platform-${RELEASE_VERSION}.tgz
+
+# Install the Dynamo Platform using the local chart file
+helm install dynamo-platform dynamo-platform-${RELEASE_VERSION}.tgz \
   --namespace dynamo-system \
-  --version 0.6.0 \
+  --create-namespace \
   --values dynamo-values.yaml \
   --wait \
   --timeout 10m
@@ -194,6 +208,13 @@ helm install dynamo-platform nvidia/dynamo-platform \
 # NAMESPACE: dynamo-system
 # STATUS: deployed
 # REVISION: 1
+```
+
+**Note:** If you encounter authentication errors when fetching the chart, you may need to authenticate with NGC:
+
+```bash
+# Login to NGC Helm registry (if required)
+helm registry login nvcr.io --username='$oauthtoken' --password="<YOUR_NGC_API_KEY>"
 ```
 
 ### Step 6: Verify the Installation
@@ -307,7 +328,30 @@ kubectl get crds | grep grove
 
 ## ⚠️ Known Issues and Troubleshooting
 
-### Issue 1: Helm Repository Error - "No Space Left on Device"
+### Issue 1: Chart Not Found Error
+
+**Symptoms:**
+- Error: `chart "dynamo-platform" matching 0.6.0 not found in nvidia index`
+- Error: `no chart name found` when trying `helm install nvidia/dynamo-platform`
+
+**Cause:**
+The Dynamo Platform chart is not available through the standard Helm repository search (`helm search repo`). It must be fetched directly from NGC's chart registry.
+
+**Solution:**
+
+```bash
+# Use the correct installation method (as shown in Step 5)
+export RELEASE_VERSION=0.6.0
+helm fetch https://helm.ngc.nvidia.com/nvidia/ai-dynamo/charts/dynamo-platform-${RELEASE_VERSION}.tgz
+helm install dynamo-platform dynamo-platform-${RELEASE_VERSION}.tgz \
+  --namespace dynamo-system \
+  --create-namespace \
+  --values dynamo-values.yaml
+```
+
+**Reference:** See [NVIDIA Dynamo Kubernetes Platform Installation Guide](https://docs.nvidia.com/dynamo/latest/kubernetes/installation_guide.html) for official installation instructions.
+
+### Issue 2: Helm Repository Error - "No Space Left on Device"
 
 **Symptoms:**
 - Error when running `helm repo add nvidia https://helm.ngc.nvidia.com/nvidia`
@@ -362,7 +406,7 @@ chmod 600 ~/.kube/config
 - Monitor disk usage: `df -h`
 - Remove unused Helm repositories
 
-### Issue 2: Dynamo Operator Restart Loop
+### Issue 3: Dynamo Operator Restart Loop
 
 **Symptoms:**
 - Operator pod shows `CrashLoopBackOff` or `Back-off restarting failed container`
@@ -429,7 +473,7 @@ kubectl delete namespace dynamo-system
 # Wait 30 seconds, then repeat installation from Step 2
 ```
 
-### Issue 2: etcd Not Starting
+### Issue 4: etcd Not Starting
 
 **Diagnosis:**
 
@@ -456,7 +500,7 @@ kubectl get storageclass
 kubectl describe pvc -n dynamo-system
 ```
 
-### Issue 3: NATS Connection Issues
+### Issue 5: NATS Connection Issues
 
 **Diagnosis:**
 
@@ -800,8 +844,9 @@ Use this checklist to ensure you're ready for the workshop:
 - [ ] kubectl is configured correctly
 - [ ] Helm v3.10+ is installed
 - [ ] dynamo-system namespace is created
-- [ ] NVIDIA Helm repository is added
-- [ ] Dynamo Platform v0.6.0 is installed
+- [ ] NVIDIA Helm repository is added (optional, for other charts)
+- [ ] Dynamo Platform v0.6.0 chart is fetched from NGC
+- [ ] Dynamo Platform v0.6.0 is installed from local chart file
 - [ ] All pods are in Running state (check for restart loops)
 - [ ] etcd is healthy and accessible
 - [ ] NATS is running with JetStream enabled
