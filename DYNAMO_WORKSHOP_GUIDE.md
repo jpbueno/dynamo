@@ -207,7 +207,36 @@ pkill -f "port-forward.*9400"
 ```bash
 # Check Prometheus pods
 k get pods -n monitoring | grep prometheus
+```
 
+#### Access Prometheus from Local Machine (Remote Server)
+
+**Option 1: SSH Port Forwarding**
+
+On your **local machine**:
+
+```bash
+# Forward Prometheus port (9090) from remote server to local machine
+ssh -L 9090:localhost:9090 user@remote-server-ip
+
+# In another terminal on the remote server, start port-forward
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
+```
+
+Then visit `http://localhost:9090` on your **local machine** and search for: `DCGM_FI_DEV_GPU_UTIL`
+
+**Option 2: Direct SSH Tunnel**
+
+On your **local machine**:
+
+```bash
+ssh -L 9090:localhost:9090 user@remote-server-ip \
+  "kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090"
+```
+
+#### Access Prometheus Locally (Same Machine)
+
+```bash
 # Port-forward Prometheus
 k port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090 &
 
@@ -223,7 +252,55 @@ k port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090 &
 kubectl get secret -n monitoring kube-prometheus-stack-grafana \
   -o jsonpath="{.data.admin-password}" | base64 -d
 echo ""
+```
 
+#### Access Grafana from Local Machine (Remote Server)
+
+If you're running the workshop on a remote server and want to access Grafana from your local computer:
+
+**Option 1: SSH Port Forwarding (Recommended)**
+
+On your **local machine**, create an SSH tunnel:
+
+```bash
+# Forward Grafana port (3000) from remote server to local machine
+ssh -L 3000:localhost:3000 user@remote-server-ip
+
+# In another terminal on the remote server, start port-forward
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+```
+
+Then visit `http://localhost:3000` on your **local machine**.
+
+**Option 2: Direct SSH Tunnel (Single Command)**
+
+On your **local machine**:
+
+```bash
+# Create SSH tunnel and port-forward in one command
+ssh -L 3000:localhost:3000 user@remote-server-ip \
+  "kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
+```
+
+Then visit `http://localhost:3000` on your **local machine**.
+
+**Option 3: Port Forward on Remote Server**
+
+If you're already SSH'd into the remote server:
+
+```bash
+# On remote server - start port-forward
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+
+# Keep this running, then on your LOCAL machine, create SSH tunnel:
+# ssh -L 3000:localhost:3000 user@remote-server-ip
+```
+
+#### Access Grafana Locally (Same Machine)
+
+If you're running everything on the same machine:
+
+```bash
 # Port-forward Grafana
 k port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80 &
 
