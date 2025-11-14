@@ -53,7 +53,7 @@ git clone https://github.com/jpbueno/dynamo.git
 cd dynamo
 
 # Run the automated installation script
-bash install-gpu-operator-stack.sh
+bash gpu-operator-stack.sh install
 ```
 
 **What gets installed:**
@@ -147,6 +147,11 @@ bash install-gpu-operator-stack.sh
 - Taint removal for single-node clusters
 - Firewall rule configuration
 - Complete verification and status reporting
+
+**Additional commands:**
+- `bash gpu-operator-stack.sh snapshot` - Create snapshot of current state
+- `bash gpu-operator-stack.sh restore <dir>` - Restore from snapshot
+- `bash gpu-operator-stack.sh status` - Show current stack status
 
 The script will take approximately 15-20 minutes to complete. After completion, you'll have a fully functional monitoring stack ready for GPU profiling.
 
