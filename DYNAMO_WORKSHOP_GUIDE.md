@@ -209,27 +209,31 @@ pkill -f "port-forward.*9400"
 k get pods -n monitoring | grep prometheus
 ```
 
-#### Access Prometheus from Local Machine (Remote Server)
+#### Access Prometheus from Local Machine (Brev / Remote Server)
 
-**Option 1: SSH Port Forwarding**
+**For Brev Environments:**
+
+**Option 1: Brev SSH with Port Forwarding**
 
 On your **local machine**:
 
 ```bash
-# Forward Prometheus port (9090) from remote server to local machine
-ssh -L 9090:localhost:9090 user@remote-server-ip
+# Create SSH tunnel using Brev CLI
+brev ssh <workspace-name> -L 9090:localhost:9090
 
-# In another terminal on the remote server, start port-forward
+# Keep this running, then in your Brev workspace, start port-forward:
 kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
 ```
 
 Then visit `http://localhost:9090` on your **local machine** and search for: `DCGM_FI_DEV_GPU_UTIL`
 
-**Option 2: Direct SSH Tunnel**
+**Option 2: Direct SSH Tunnel (Generic)**
 
 On your **local machine**:
 
 ```bash
+# For Brev: use your Brev SSH command
+# For generic server: use standard SSH
 ssh -L 9090:localhost:9090 user@remote-server-ip \
   "kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090"
 ```
@@ -254,19 +258,21 @@ kubectl get secret -n monitoring kube-prometheus-stack-grafana \
 echo ""
 ```
 
-#### Access Grafana from Local Machine (Remote Server)
+#### Access Grafana from Local Machine (Brev / Remote Server)
 
-If you're running the workshop on a remote server and want to access Grafana from your local computer:
+If you're running the workshop on a **Brev environment** or remote server and want to access Grafana from your local computer:
 
-**Option 1: SSH Port Forwarding (Recommended)**
+**For Brev Environments:**
+
+**Option 1: Brev SSH with Port Forwarding (Recommended)**
 
 On your **local machine**, create an SSH tunnel:
 
 ```bash
-# Forward Grafana port (3000) from remote server to local machine
-ssh -L 3000:localhost:3000 user@remote-server-ip
+# Using Brev CLI - forward Grafana port (3000) from Brev workspace to local machine
+brev ssh <workspace-name> -L 3000:localhost:3000
 
-# In another terminal on the remote server, start port-forward
+# Keep this running, then in your Brev workspace (another terminal), start port-forward:
 kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
 ```
 
@@ -277,14 +283,28 @@ Then visit `http://localhost:3000` on your **local machine**.
 On your **local machine**:
 
 ```bash
-# Create SSH tunnel and port-forward in one command
-ssh -L 3000:localhost:3000 user@remote-server-ip \
+# Create SSH tunnel and port-forward in one command (Brev)
+brev ssh <workspace-name> -L 3000:localhost:3000 \
   "kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
 ```
 
 Then visit `http://localhost:3000` on your **local machine**.
 
-**Option 3: Port Forward on Remote Server**
+**For Generic Remote Servers:**
+
+**Option 1: SSH Port Forwarding**
+
+On your **local machine**:
+
+```bash
+# Forward Grafana port (3000) from remote server to local machine
+ssh -L 3000:localhost:3000 user@remote-server-ip
+
+# In another terminal on the remote server, start port-forward
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+```
+
+**Option 2: Port Forward on Remote Server**
 
 If you're already SSH'd into the remote server:
 
