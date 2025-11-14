@@ -125,10 +125,15 @@ initialize_cluster() {
     log_info "Initializing Kubernetes cluster..."
     
     # Check if cluster is already initialized and working
-    if [ -f /etc/kubernetes/admin.conf ]; then
+    if [ -f /etc/kubernetes/admin.conf ] || [ -f /etc/kubernetes/super-admin.conf ]; then
         log_info "Kubernetes admin config found, setting up kubeconfig..."
         mkdir -p $HOME/.kube
-        sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config 2>/dev/null || true
+        # Prefer super-admin.conf if available (has full permissions)
+        if [ -f /etc/kubernetes/super-admin.conf ]; then
+            sudo cp -i /etc/kubernetes/super-admin.conf $HOME/.kube/config 2>/dev/null || true
+        else
+            sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config 2>/dev/null || true
+        fi
         sudo chown $(id -u):$(id -g) $HOME/.kube/config 2>/dev/null || true
         
         # Test if cluster is accessible
@@ -144,11 +149,14 @@ initialize_cluster() {
     # Check if ports are in use (partial initialization)
     if sudo netstat -tlnp 2>/dev/null | grep -q ":6443.*LISTEN"; then
         log_warn "Port 6443 is in use. Cluster may be partially initialized."
-        log_info "Setting up kubeconfig from existing admin.conf..."
+        log_info "Setting up kubeconfig from existing config..."
         mkdir -p $HOME/.kube
-        if [ -f /etc/kubernetes/admin.conf ]; then
+        if [ -f /etc/kubernetes/super-admin.conf ]; then
+            sudo cp -i /etc/kubernetes/super-admin.conf $HOME/.kube/config
+        elif [ -f /etc/kubernetes/admin.conf ]; then
             sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
-            sudo chown $(id -u):$(id -g) $HOME/.kube/config
+        fi
+        sudo chown $(id -u):$(id -g) $HOME/.kube/config
             configure_kubectl_shell
             
             # Wait a moment and test
@@ -168,7 +176,12 @@ initialize_cluster() {
     sudo kubeadm init --pod-network-cidr=$POD_NETWORK_CIDR
     
     mkdir -p $HOME/.kube
-    sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+    # Prefer super-admin.conf if available (has full permissions)
+    if [ -f /etc/kubernetes/super-admin.conf ]; then
+        sudo cp -i /etc/kubernetes/super-admin.conf $HOME/.kube/config
+    else
+        sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+    fi
     sudo chown $(id -u):$(id -g) $HOME/.kube/config
     
     configure_kubectl_shell
