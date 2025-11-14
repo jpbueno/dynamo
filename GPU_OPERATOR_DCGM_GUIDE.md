@@ -5,14 +5,15 @@
 ## 📖 Table of Contents
 
 1. [Overview](#overview)
-2. [NVIDIA GPU Operator Fundamentals](#nvidia-gpu-operator-fundamentals)
-3. [DCGM (Data Center GPU Manager) Deep Dive](#dcgm-data-center-gpu-manager-deep-dive)
-4. [DCGM Metrics for Profiling](#dcgm-metrics-for-profiling)
-5. [Interpreting Metrics](#interpreting-metrics)
-6. [Setting Up Prometheus and Grafana for DCGM Metrics](#setting-up-prometheus-and-grafana-for-dcgm-metrics)
-7. [Practical Examples](#practical-examples)
-8. [Troubleshooting](#troubleshooting)
-9. [Resources & Next Steps](#resources--next-steps)
+2. [Quick Start Guide](#quick-start-guide)
+3. [NVIDIA GPU Operator Fundamentals](#nvidia-gpu-operator-fundamentals)
+4. [DCGM (Data Center GPU Manager) Deep Dive](#dcgm-data-center-gpu-manager-deep-dive)
+5. [DCGM Metrics for Profiling](#dcgm-metrics-for-profiling)
+6. [Interpreting Metrics](#interpreting-metrics)
+7. [Setting Up Prometheus and Grafana for DCGM Metrics](#setting-up-prometheus-and-grafana-for-dcgm-metrics)
+8. [Practical Examples](#practical-examples)
+9. [Troubleshooting](#troubleshooting)
+10. [Resources & Next Steps](#resources--next-steps)
 
 ---
 
@@ -37,6 +38,43 @@ The **NVIDIA GPU Operator** is a Kubernetes operator that manages GPU resources 
 - **Profiling capabilities** - Detailed performance analysis
 - **Health monitoring** - Early detection of issues
 - **Telemetry** - Integration with monitoring stacks (Prometheus, Grafana)
+
+---
+
+## Quick Start Guide
+
+### Complete Stack Installation (15-20 minutes)
+
+For a fresh Ubuntu 22.04 server, you can install everything with a single script:
+
+```bash
+# Clone the repository
+git clone https://github.com/jpbueno/dynamo.git
+cd dynamo
+
+# Run the automated installation script
+bash install-gpu-operator-stack.sh
+```
+
+**What gets installed:**
+- ✅ Kubernetes cluster (kubeadm)
+- ✅ GPU Operator with DCGM Exporter
+- ✅ Prometheus and Grafana monitoring stack
+- ✅ All necessary configurations and fixes
+
+**After installation:**
+1. Access Grafana: `kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80`
+2. Get Grafana password: `kubectl get secret -n monitoring kube-prometheus-stack-grafana -o jsonpath="{.data.admin-password}" | base64 -d`
+3. Configure Prometheus data source in Grafana (see [Prometheus/Grafana Setup](#setting-up-prometheus-and-grafana-for-dcgm-metrics))
+4. Start profiling GPU workloads!
+
+**Prerequisites:**
+- Ubuntu 22.04 server
+- GPU with NVIDIA driver support
+- Internet connectivity
+- Sudo access
+
+For detailed manual installation or troubleshooting, see the sections below.
 
 ---
 
@@ -81,6 +119,112 @@ The **NVIDIA GPU Operator** is a Kubernetes operator that manages GPU resources 
 
 ### Installation
 
+#### Option 1: Automated Installation (Recommended)
+
+For a complete setup including Kubernetes, GPU Operator, Prometheus, and Grafana, use the automated installation script:
+
+```bash
+# Clone the repository (if not already done)
+git clone https://github.com/jpbueno/dynamo.git
+cd dynamo
+
+# Run the installation script
+bash install-gpu-operator-stack.sh
+```
+
+**What the script installs:**
+- Kubernetes cluster (kubeadm)
+- Containerd runtime configuration
+- Flannel CNI plugin
+- GPU Operator with DCGM Exporter
+- Prometheus and Grafana stack
+- ServiceMonitor for DCGM metrics
+- All necessary firewall and system configurations
+
+**Script features:**
+- Automatic prerequisite installation
+- Cluster initialization and configuration
+- Taint removal for single-node clusters
+- Firewall rule configuration
+- Complete verification and status reporting
+
+The script will take approximately 15-20 minutes to complete. After completion, you'll have a fully functional monitoring stack ready for GPU profiling.
+
+#### Option 2: Manual Installation
+
+If you prefer manual installation or already have a Kubernetes cluster:
+
+**Prerequisites:**
+- Ubuntu 22.04 (or compatible Linux distribution)
+- Root or sudo access
+- Internet connectivity
+- GPU with NVIDIA driver support
+
+**Step 1: Install Kubernetes**
+
+```bash
+# Install prerequisites
+sudo apt-get update
+sudo apt-get install -y apt-transport-https ca-certificates curl gpg conntrack
+
+# Load kernel modules
+sudo modprobe br_netfilter
+echo "br_netfilter" | sudo tee -a /etc/modules-load.d/k8s.conf
+
+# Configure sysctl
+cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+EOF
+sudo sysctl --system
+
+# Disable swap
+sudo swapoff -a
+sudo sed -i '/swap/s/^/#/' /etc/fstab
+
+# Install Kubernetes tools
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+sudo apt-get update
+sudo apt-get install -y kubelet kubeadm kubectl
+sudo apt-mark hold kubelet kubeadm kubectl
+
+# Configure containerd
+sudo mkdir -p /etc/containerd
+containerd config default | sudo tee /etc/containerd/config.toml
+sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+sudo systemctl restart containerd
+sudo systemctl enable containerd
+
+# Initialize cluster
+sudo kubeadm init --pod-network-cidr=10.244.0.0/16
+
+# Configure kubectl
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+# Remove control-plane taint (for single-node clusters)
+kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+
+# Install Flannel CNI
+kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+
+# Configure firewall (if needed)
+NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+sudo iptables -I INPUT 1 -m state --state ESTABLISHED,RELATED -j ACCEPT
+sudo iptables -I INPUT 1 -s 10.244.0.0/16 -d $NODE_IP -p tcp --dport 6443 -j ACCEPT
+sudo iptables -I INPUT 1 -s 10.244.0.0/16 -d 10.96.0.1 -p tcp --dport 443 -j ACCEPT
+```
+
+**Step 2: Install Helm**
+
+```bash
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+```
+
+**Step 3: Install GPU Operator**
+
 ```bash
 # Add NVIDIA Helm repository
 helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
@@ -91,11 +235,100 @@ helm install --wait gpu-operator \
   nvidia/gpu-operator \
   --namespace gpu-operator \
   --create-namespace \
-  --set operator.defaultRuntime=containerd
+  --set operator.defaultRuntime=containerd \
+  --timeout 10m
 
 # Verify installation
 kubectl get pods -n gpu-operator
-kubectl get nodes -l nvidia.com/gpu.present=true
+```
+
+**Step 4: Install Prometheus and Grafana**
+
+See the [Setting Up Prometheus and Grafana](#setting-up-prometheus-and-grafana-for-dcgm-metrics) section for detailed instructions.
+
+### Troubleshooting Installation Issues
+
+#### Issue: Control-Plane Node Taint Preventing Pod Scheduling
+
+**Symptoms:**
+- Pods stuck in `Pending` state
+- Error: `0/1 nodes are available: 1 node(s) had untolerated taint`
+
+**Solution:**
+```bash
+# Remove control-plane taint
+kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+kubectl taint nodes --all node-role.kubernetes.io/master-  # For older k8s versions
+```
+
+#### Issue: Pods Cannot Reach Kubernetes API Server
+
+**Symptoms:**
+- CoreDNS pods not ready
+- GPU Operator pods in `CrashLoopBackOff`
+- Error: `dial tcp 10.96.0.1:443: i/o timeout`
+
+**Solution:**
+```bash
+# Get node IP
+NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+
+# Add firewall rules to allow pod-to-host communication
+sudo iptables -I INPUT 1 -m state --state ESTABLISHED,RELATED -j ACCEPT
+sudo iptables -I INPUT 1 -s 10.244.0.0/16 -d $NODE_IP -p tcp --dport 6443 -j ACCEPT
+sudo iptables -I INPUT 1 -s 10.244.0.0/16 -d 10.96.0.1 -p tcp --dport 443 -j ACCEPT
+
+# Restart CoreDNS pods
+kubectl delete pods -n kube-system -l k8s-app=kube-dns
+```
+
+#### Issue: CoreDNS Not Ready
+
+**Symptoms:**
+- CoreDNS pods running but not ready
+- DNS queries failing
+
+**Solution:**
+```bash
+# Check CoreDNS logs
+kubectl logs -n kube-system -l k8s-app=kube-dns
+
+# Verify API server connectivity
+kubectl get endpoints kubernetes -n default
+
+# Restart CoreDNS
+kubectl rollout restart deployment/coredns -n kube-system
+```
+
+#### Issue: GPU Operator Pods Failing
+
+**Symptoms:**
+- GPU Operator pods in `CrashLoopBackOff`
+- Cannot connect to Kubernetes API
+
+**Solution:**
+1. Ensure control-plane taint is removed (see above)
+2. Ensure firewall rules are configured (see above)
+3. Wait for CoreDNS to be ready
+4. Restart GPU Operator pods:
+   ```bash
+   kubectl delete pods -n gpu-operator -l app=gpu-operator
+   ```
+
+#### Issue: Port Conflict with Node Exporter
+
+**Symptoms:**
+- `prometheus-node-exporter` pod in `CrashLoopBackOff`
+- Error: `bind: address already in use` on port 9100
+
+**Solution:**
+```bash
+# Option 1: Delete Kubernetes node-exporter (if host one exists)
+kubectl delete daemonset -n monitoring kube-prometheus-stack-prometheus-node-exporter
+
+# Option 2: Stop host node-exporter
+sudo systemctl stop node_exporter
+sudo systemctl disable node_exporter
 ```
 
 ### Verification
