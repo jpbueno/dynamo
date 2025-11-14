@@ -527,15 +527,6 @@ Analyze your metrics using this decision tree:
 - **Interpretation:** GPU appears busy but cores aren't doing useful work
 - **Solution:** Optimize kernel launch configuration, increase occupancy, reduce register usage, check for kernel gaps (use Nsight Systems)
 
-#### Scenario G: Mixed Workload (HPC-style)
-- **Root Cause:** Balanced compute and memory usage
-- **Key Indicators:**
-  - **SM Active: High (80-90%)**
-  - **DRAM Active: High (80-90%)**
-  - Tensor Active: Low (<10%) (not using specialized units)
-  - GPU Utilization: High (>90%)
-- **Interpretation:** Balanced workload, both compute and memory are active
-- **Solution:** This is normal for HPC workloads. Consider: optimize for specific bottleneck if needed
 
 ### Step 5.2: Prometheus Queries for Analysis
 
@@ -616,7 +607,7 @@ $(cat metrics-saturation.txt)
 
 Root Cause Analysis:
 --------------------
-Scenario Identified: [A/B/C/D/E/F/G]
+Scenario Identified: [A/B/C/D/E/F]
 Evidence:
 - [List key metrics that support your conclusion]
 - **Which of the 3 key signals (SM Active, DRAM Active, Tensor Active) were most indicative?**
@@ -685,7 +676,6 @@ You need all three signals to confirm true saturation.
 | 95% | 30% | 90% | ✅ Perfect compute-bound, saturated AI workload |
 | 40% | 95% | <10% | ⚠️ Memory-bound (not compute-saturated) |
 | 20% | 10% | 10% | ⚠️ Input-bound (CPU, disk, network bottleneck) |
-| 90% | 90% | 10% | ⚠️ Mixed workload (HPC kernels) |
 | 90% | 90% | 90% | ✅ Fully saturated across all dimensions |
 
 ### Key Metrics Reference
