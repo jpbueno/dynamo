@@ -40,20 +40,26 @@ show_usage() {
     cat <<EOF
 GPU Operator Stack Management Script
 
-Usage: $0 [COMMAND]
+Usage: $0 [COMMAND] [OPTIONS]
 
 Commands:
-  install       Install complete stack (Kubernetes, GPU Operator, Prometheus, Grafana)
-  snapshot      Create snapshot of current server state
-  restore       Restore from snapshot (requires snapshot directory)
-  status        Show current stack status
-  help          Show this help message
+  install              Install complete stack (Kubernetes, GPU Operator, Prometheus, Grafana)
+  snapshot             Create snapshot of current server state
+  restore <dir>        Restore from snapshot (requires snapshot directory)
+  status               Show current stack status
+  health [namespace]   Check health of Dynamo Platform (default: dynamo-system)
+  troubleshoot-helm    Troubleshoot Helm disk space issues
+  push [token]         Create GitHub repo and push code (requires token)
+  help                 Show this help message
 
 Examples:
-  $0 install              # Install everything
-  $0 snapshot             # Create snapshot
-  $0 restore ./snapshot   # Restore from snapshot
-  $0 status               # Check status
+  $0 install                    # Install everything
+  $0 snapshot                   # Create snapshot
+  $0 restore ./snapshot         # Restore from snapshot
+  $0 status                     # Check status
+  $0 health dynamo-system       # Check Dynamo Platform health
+  $0 troubleshoot-helm          # Fix Helm disk issues
+  $0 push <github_token>        # Push to GitHub
 
 EOF
 }
@@ -681,6 +687,213 @@ cmd_status() {
 }
 
 # ============================================================================
+# HEALTH CHECK FUNCTION (Dynamo Platform)
+# ============================================================================
+
+cmd_health() {
+    log_section "Dynamo Platform Health Check"
+    
+    NAMESPACE="${1:-dynamo-system}"
+    
+    if ! kubectl get namespace $NAMESPACE &> /dev/null; then
+        log_error "Namespace $NAMESPACE does not exist"
+        exit 1
+    fi
+    
+    log_info "Namespace exists: $NAMESPACE"
+    echo ""
+    
+    echo "=== Pod Status ==="
+    kubectl get pods -n $NAMESPACE -o wide
+    echo ""
+    
+    echo "=== Component Health ==="
+    
+    check_component() {
+        local name=$1
+        local selector=$2
+        local pods=$(kubectl get pods -n $NAMESPACE -l "$selector" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        
+        if [ "$pods" -eq 0 ]; then
+            echo -e "  ${YELLOW}⚠️  $name: No pods found${NC}"
+            return 1
+        fi
+        
+        local ready=$(kubectl get pods -n $NAMESPACE -l "$selector" -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        local running=$(kubectl get pods -n $NAMESPACE -l "$selector" -o jsonpath='{.items[*].status.phase}' 2>/dev/null)
+        
+        if [[ "$ready" == *"True"* ]] && [[ "$running" == *"Running"* ]]; then
+            echo -e "  ${GREEN}✅ $name: Healthy ($pods pods)${NC}"
+            return 0
+        elif [[ "$running" == *"Running"* ]]; then
+            echo -e "  ${YELLOW}⚠️  $name: Running but not ready ($pods pods)${NC}"
+            return 1
+        else
+            echo -e "  ${RED}❌ $name: Not healthy ($pods pods)${NC}"
+            kubectl get pods -n $NAMESPACE -l "$selector" --no-headers | grep -v "Running.*1/1"
+            return 1
+        fi
+    }
+    
+    HEALTHY=0
+    check_component "Dynamo Operator" "app.kubernetes.io/name=dynamo-operator" || ((HEALTHY++))
+    check_component "etcd" "app.kubernetes.io/name=etcd" || ((HEALTHY++))
+    check_component "NATS" "app.kubernetes.io/name=nats" || ((HEALTHY++))
+    check_component "KAI Scheduler" "app=scheduler" || ((HEALTHY++))
+    check_component "KAI Operator" "app=kai-operator" || ((HEALTHY++))
+    check_component "Binder" "app=binder" || ((HEALTHY++))
+    check_component "Admission Controller" "app=admission" || ((HEALTHY++))
+    check_component "Grove Operator" "app.kubernetes.io/name=grove-operator" || ((HEALTHY++))
+    
+    echo ""
+    echo "=== Storage Status ==="
+    kubectl get pvc -n $NAMESPACE 2>/dev/null || echo "No PVCs found"
+    
+    echo ""
+    echo "=== Services ==="
+    kubectl get svc -n $NAMESPACE
+    
+    echo ""
+    echo "=== Recent Events ==="
+    kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' | tail -10
+    
+    echo ""
+    echo "=== CRDs Installed ==="
+    kubectl get crds | grep -E 'dynamo|kai|grove' | wc -l | xargs echo "Total Dynamo-related CRDs:"
+    
+    echo ""
+    if [ $HEALTHY -eq 0 ]; then
+        log_info "All Components Healthy"
+        exit 0
+    else
+        log_warn "$HEALTHY Component(s) Need Attention"
+        echo ""
+        echo "Run these commands to investigate:"
+        echo "  kubectl describe pods -n $NAMESPACE"
+        echo "  kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=dynamo-operator --tail=50"
+        echo "  kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp'"
+        exit 1
+    fi
+}
+
+# ============================================================================
+# TROUBLESHOOT HELM FUNCTION
+# ============================================================================
+
+cmd_troubleshoot_helm() {
+    log_section "Troubleshooting Helm Disk Space Issues"
+    
+    echo "1. Checking disk space:"
+    df -h /home
+    echo ""
+    
+    echo "2. Checking inode usage:"
+    df -i /home
+    echo ""
+    
+    echo "3. Checking Helm cache:"
+    if [ -d ~/.cache/helm ]; then
+        du -sh ~/.cache/helm
+        echo ""
+        echo "4. Helm cache breakdown:"
+        du -sh ~/.cache/helm/* 2>/dev/null | sort -h || echo "  Cache directory exists but is empty or inaccessible"
+    else
+        echo "  Helm cache directory does not exist"
+    fi
+    echo ""
+    
+    echo "5. Top 10 directories using space in home:"
+    du -h --max-depth=1 ~ 2>/dev/null | sort -h | tail -10
+    echo ""
+    
+    echo "=== Attempting Solution 1: Clean Helm Cache ==="
+    rm -rf ~/.cache/helm 2>/dev/null || true
+    mkdir -p ~/.cache/helm/repository
+    echo "Helm cache cleaned. Attempting to add repo..."
+    helm repo remove nvidia 2>/dev/null || true
+    
+    if helm repo add nvidia https://helm.ngc.nvidia.com/nvidia 2>&1; then
+        log_info "Success!"
+    else
+        log_warn "Still failing, trying Solution 2..."
+        echo ""
+        echo "=== Attempting Solution 2: Use /tmp for Helm Cache ==="
+        export HELM_CACHE_HOME=/tmp/helm-cache-$(whoami)
+        mkdir -p $HELM_CACHE_HOME
+        echo "Helm cache set to: $HELM_CACHE_HOME"
+        if helm repo add nvidia https://helm.ngc.nvidia.com/nvidia 2>&1; then
+            log_info "Success!"
+        else
+            log_warn "Still failing, try Solution 3..."
+        fi
+    fi
+    
+    echo ""
+    echo "=== Fixing kubeconfig permissions ==="
+    chmod 600 ~/.kube/config 2>/dev/null && log_info "Fixed kubeconfig permissions" || log_warn "Could not fix kubeconfig (file may not exist)"
+    
+    echo ""
+    echo "=== Summary ==="
+    echo "If repo add still fails, use Solution 3: Install directly from OCI:"
+    echo "  helm install dynamo-platform oci://nvcr.io/nvidia/helm-charts/dynamo-platform \\"
+    echo "    --version 0.6.0 --namespace dynamo-system --create-namespace"
+}
+
+# ============================================================================
+# GITHUB PUSH FUNCTION
+# ============================================================================
+
+cmd_push() {
+    log_section "GitHub Repository Setup and Push"
+    
+    REPO_NAME="dynamo"
+    GITHUB_USER="jpbueno"
+    GITHUB_TOKEN="${1:-${GITHUB_TOKEN}}"
+    
+    log_info "Creating GitHub repository: $GITHUB_USER/$REPO_NAME"
+    
+    if [ -z "$GITHUB_TOKEN" ]; then
+        log_error "GitHub token not provided."
+        echo ""
+        echo "Please either:"
+        echo "1. Create the repository manually at: https://github.com/new"
+        echo "   Repository name: $REPO_NAME"
+        echo "   Visibility: Public or Private (your choice)"
+        echo "   Then run: git push -u origin main"
+        echo ""
+        echo "OR"
+        echo ""
+        echo "2. Get a GitHub token from: https://github.com/settings/tokens"
+        echo "   Then run: $0 push <your_token>"
+        exit 1
+    fi
+    
+    # Create repository via GitHub API
+    RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+      -H "Authorization: token $GITHUB_TOKEN" \
+      -H "Accept: application/vnd.github.v3+json" \
+      https://api.github.com/user/repos \
+      -d "{\"name\":\"$REPO_NAME\",\"description\":\"NVIDIA Dynamo Platform - Workshop Preparation Kit\",\"private\":false}")
+    
+    HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+    BODY=$(echo "$RESPONSE" | sed '$d')
+    
+    if [ "$HTTP_CODE" = "201" ]; then
+        log_info "Repository created successfully!"
+        log_info "Pushing code to GitHub..."
+        git push -u origin main
+        log_info "Done! Repository available at: https://github.com/$GITHUB_USER/$REPO_NAME"
+    elif [ "$HTTP_CODE" = "422" ]; then
+        log_warn "Repository might already exist, attempting to push..."
+        git push -u origin main || log_error "Push failed. Please check repository permissions."
+    else
+        log_error "Failed to create repository. HTTP Code: $HTTP_CODE"
+        echo "Response: $BODY"
+        exit 1
+    fi
+}
+
+# ============================================================================
 # MAIN
 # ============================================================================
 
@@ -697,6 +910,15 @@ main() {
             ;;
         status)
             cmd_status
+            ;;
+        health)
+            cmd_health "$2"
+            ;;
+        troubleshoot-helm)
+            cmd_troubleshoot_helm
+            ;;
+        push)
+            cmd_push "$2"
             ;;
         help|--help|-h)
             show_usage
