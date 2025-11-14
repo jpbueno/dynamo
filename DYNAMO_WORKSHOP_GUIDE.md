@@ -567,40 +567,102 @@ cat analysis-report.txt
 
 ## Understanding DCGM Metrics
 
-### Key Metrics for Saturation Analysis
+### The 3 Signals That Truly Indicate GPU Saturation
 
-| Metric | Field ID | Unit | Good Range | What It Tells You |
-|--------|----------|------|------------|-------------------|
-| GPU Utilization | 155 | % | 70-95% | How busy the GPU is |
-| Memory Utilization | 150 | % | 40-70% | Memory controller activity |
-| Memory Used | 100 | Bytes | 60-80% of total | Actual GPU memory usage |
-| SM Occupancy | 155 | % | 50-80% | Streaming Multiprocessor utilization |
-| Power Usage | 203 | W | 80-95% TDP | Power consumption |
-| Temperature | 252 | °C | 70-85°C | Thermal status |
-| PCIe RX | - | B/s | <30% capacity | Data input rate |
-| PCIe TX | - | B/s | <30% capacity | Data output rate |
+> **Important**: GPU saturation is a **multi-dimensional condition**. Never rely on a single metric. You must look at both **macro-level utilization metrics** and **micro-level profiling counters** to understand if the GPU is fully fed, compute-bound, memory-bound, latency-bound, input-bound, network/PCIe-bound, or simply idle.
 
-### Metric Interpretation Guide
+#### 1️⃣ SM Utilization + SM Active (DCGM Profiling) → "Are the cores busy?"
 
-**GPU Utilization:**
-- **0-50%**: Underutilized, may indicate I/O bottleneck
-- **50-90%**: Good utilization
-- **90-100%**: High utilization, check for bottlenecks
+**Macro metric (always available):**
+- `DCGM_FI_DEV_GPU_UTIL` - Measures overall GPU utilization (coarse-grained)
 
-**Memory Utilization:**
-- **<50%**: Compute-bound workload
-- **50-80%**: Balanced workload
-- **>80%**: Memory-bound workload
+**Profiling metric (more accurate):**
+- `DCGM_FI_PROF_SM_ACTIVE` - Measures % of cycles where Streaming Multiprocessors (SMs) were doing active work
+  - This is the **real** compute saturation indicator
+  - **If SM Active ≥ 85–90%, the GPU is compute-saturated**
 
-**SM Occupancy:**
-- **<50%**: Kernel efficiency issues
-- **50-80%**: Good occupancy
-- **>80%**: Excellent occupancy
+#### 2️⃣ DRAM Active → "Is memory the bottleneck?"
 
-**Temperature:**
-- **<70°C**: Cool, no throttling risk
-- **70-85°C**: Normal operating range
-- **>85°C**: Risk of thermal throttling
+- `DCGM_FI_PROF_DRAM_ACTIVE` - Measures memory subsystem saturation (global memory bandwidth)
+  - **If DRAM Active is high (>80%) but SM Active is low → memory-bound workload**
+  - GPU is not compute-saturated, even if overall GPU Utilization looks high
+
+#### 3️⃣ Tensor/FP pipelines → "Are the tensor cores or ALUs saturated?"
+
+For LLMs and training workloads:
+- `DCGM_FI_PROF_PIPE_TENSOR_ACTIVE` - Tensor Core activity
+- `DCGM_FI_PROF_PIPE_FP16_ACTIVE` - FP16 pipeline activity
+- `DCGM_FI_PROF_PIPE_FP32_ACTIVE` - FP32 pipeline activity
+- `DCGM_FI_PROF_PIPE_FP64_ACTIVE` - FP64 pipeline activity
+
+**Tensor Core Active near 90% → true saturation for AI/LLM workloads.**
+
+If this is low but SM Active is also low → input pipeline bottleneck (CPU, network, data loader, inference batching).
+
+### The Golden Rule
+
+> **Real GPU saturation = High SM Active AND high relevant pipeline activity AND no starvation signals.**
+
+You need all three signals to confirm true saturation.
+
+### Saturation Interpretation Matrix
+
+| SM Active | DRAM Active | Tensor Active | Interpretation |
+|-----------|-------------|---------------|----------------|
+| 95% | 30% | 90% | ✅ Perfect compute-bound, saturated AI workload |
+| 40% | 95% | <10% | ⚠️ Memory-bound (not compute-saturated) |
+| 20% | 10% | 10% | ⚠️ Input-bound (CPU, disk, network bottleneck) |
+| 90% | 90% | 10% | ⚠️ Mixed workload (HPC kernels) |
+| 90% | 90% | 90% | ✅ Fully saturated across all dimensions |
+
+### Key Metrics Reference
+
+| Metric | DCGM Field | Unit | Saturation Indicator | What It Tells You |
+|--------|------------|------|---------------------|-------------------|
+| **SM Active** | `DCGM_FI_PROF_SM_ACTIVE` | % | **≥85-90%** | Real compute saturation |
+| **DRAM Active** | `DCGM_FI_PROF_DRAM_ACTIVE` | % | **>80%** | Memory bandwidth saturation |
+| **Tensor Active** | `DCGM_FI_PROF_PIPE_TENSOR_ACTIVE` | % | **≥90%** | Tensor core saturation (AI/LLM) |
+| GPU Utilization | `DCGM_FI_DEV_GPU_UTIL` | % | 70-95% | Coarse-grained utilization |
+| Memory Used | `DCGM_FI_DEV_FB_USED` | Bytes | 60-80% of total | GPU memory usage |
+| Power Usage | `DCGM_FI_DEV_POWER_USAGE` | W | 80-95% TDP | Power consumption |
+| Temperature | `DCGM_FI_DEV_GPU_TEMP` | °C | 70-85°C | Thermal status |
+| PCIe RX | `DCGM_FI_DEV_PCIE_RX_THROUGHPUT` | B/s | <30% capacity | Data input rate |
+| PCIe TX | `DCGM_FI_DEV_PCIE_TX_THROUGHPUT` | B/s | <30% capacity | Data output rate |
+
+### How Pros Measure GPU Saturation (NVIDIA SA Methodology)
+
+#### Step 1: Check SM Active
+- **If <80%**: You are NOT saturated unless you're memory-bound
+- **If ≥85-90%**: GPU is compute-saturated
+
+#### Step 2: Check DRAM Active
+- **If high (>80%) and SM is low**: Memory-bound workload (common in vector embeddings)
+- **If both high**: Balanced workload
+
+#### Step 3: Check Tensor Active (for LLM/AI workloads)
+- **Low tensor activity**: Likely bad batching or mixed workloads
+- **High tensor activity**: Proper utilization of specialized hardware
+
+#### Step 4: Check PCIe Utilization
+- **High PCIe usage**: GPU might be stalled waiting for host transfers
+- **Low PCIe, low SM**: Input pipeline bottleneck
+
+#### Step 5: Validate End-to-End Throughput
+- **If GPU metrics are high but QPS is low**: Bottleneck is outside the GPU (CPU, network, data loader)
+
+### Best Single Indicator
+
+If you must pick ONE metric:
+
+👉 **`DCGM_FI_PROF_SM_ACTIVE` (SM Active)**
+
+Because it directly measures how many cycles the SMs spent doing useful work.
+
+**But remember**: Real saturation means combining:
+- ✔ SM Active
+- ✔ DRAM Active  
+- ✔ Tensor Active (for AI workloads)
+- ✔ No kernel gaps (requires Nsight Systems)
 
 ---
 
