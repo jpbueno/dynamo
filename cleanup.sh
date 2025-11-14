@@ -10,7 +10,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # Configuration
 GPU_OPERATOR_NAMESPACE="gpu-operator"
@@ -34,7 +34,7 @@ log_section() {
     echo -e "${BLUE}========================================${NC}\n"
 }
 
-cmd_cleanup() {
+main() {
     log_section "Cleaning Up GPU Operator Stack"
     
     log_warn "This will remove:"
@@ -97,16 +97,10 @@ cmd_cleanup() {
     log_info "Cleaning Helm cache..."
     rm -rf ~/.cache/helm 2>/dev/null || true
     
-    # Remove system configurations (be careful - only remove what we added)
+    # Remove system configurations
     log_info "Cleaning system configurations..."
     
-    # Remove Kubernetes-specific firewall rules (keep others)
-    if [ -f /tmp/iptables-backup-$(date +%Y%m%d).txt ]; then
-        log_info "Backing up current iptables..."
-        sudo iptables-save > /tmp/iptables-backup-$(date +%Y%m%d).txt
-    fi
-    
-    # Remove our specific rules (be careful - these might not exist)
+    # Remove Kubernetes-specific firewall rules
     sudo iptables -D INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
     sudo iptables -D INPUT -s 10.244.0.0/16 -d 10.96.0.1 -p tcp --dport 443 -j ACCEPT 2>/dev/null || true
     
@@ -121,7 +115,7 @@ cmd_cleanup() {
     # Remove ServiceMonitor
     kubectl delete servicemonitor -n $GPU_OPERATOR_NAMESPACE nvidia-dcgm-exporter --ignore-not-found=true 2>/dev/null || true
     
-    # Clean up any remaining pods/resources (if cluster still exists)
+    # Clean up any remaining pods/resources
     if kubectl cluster-info &>/dev/null 2>&1; then
         log_info "Cleaning up remaining resources..."
         kubectl delete --all pods --all-namespaces --grace-period=0 --force 2>/dev/null || true
@@ -144,9 +138,8 @@ cmd_cleanup() {
     echo "To fully remove Kubernetes tools, run manually:"
     echo "  sudo apt-get purge -y kubelet kubeadm kubectl kubernetes-cni"
     echo ""
-    echo "To reinstall, run: bash install-gpu-operator-stack.sh"
+    echo "To reinstall, run: bash setup.sh"
 }
 
-# Run cleanup
-cmd_cleanup
+main "$@"
 

@@ -689,7 +689,7 @@ k delete pod gpu-workload-compute 2>/dev/null || true
 k delete pod gpu-workload-memory 2>/dev/null || true
 
 # Clean up the entire stack
-bash cleanup-gpu-operator-stack.sh
+bash cleanup.sh
 ```
 
 ### Manual Cleanup

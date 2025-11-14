@@ -1,5 +1,5 @@
 #!/bin/bash
-# GPU Operator Stack Installation Script
+# GPU Operator Stack Setup Script
 # Installs: Kubernetes, GPU Operator, Prometheus, Grafana
 # For Ubuntu 22.04
 
@@ -10,7 +10,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # Configuration
 POD_NETWORK_CIDR="10.244.0.0/16"
@@ -34,6 +34,17 @@ log_section() {
     echo -e "\n${BLUE}========================================${NC}"
     echo -e "${BLUE}$1${NC}"
     echo -e "${BLUE}========================================${NC}\n"
+}
+
+# Progress tracking
+PROGRESS_STEP=0
+TOTAL_STEPS=10
+
+show_progress() {
+    PROGRESS_STEP=$((PROGRESS_STEP + 1))
+    echo ""
+    echo -e "${BLUE}[$PROGRESS_STEP/$TOTAL_STEPS]${NC} $1"
+    echo "----------------------------------------"
 }
 
 check_root() {
@@ -121,77 +132,9 @@ install_containerd() {
     log_info "Containerd configured"
 }
 
-initialize_cluster() {
-    log_info "Initializing Kubernetes cluster..."
-    
-    # Check if cluster is already initialized and working
-    if [ -f /etc/kubernetes/admin.conf ] || [ -f /etc/kubernetes/super-admin.conf ]; then
-        log_info "Kubernetes admin config found, setting up kubeconfig..."
-        mkdir -p $HOME/.kube
-        # Prefer super-admin.conf if available (has full permissions)
-        if [ -f /etc/kubernetes/super-admin.conf ]; then
-            sudo cp -i /etc/kubernetes/super-admin.conf $HOME/.kube/config 2>/dev/null || true
-        else
-            sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config 2>/dev/null || true
-        fi
-        sudo chown $(id -u):$(id -g) $HOME/.kube/config 2>/dev/null || true
-        
-        # Test if cluster is accessible
-        if kubectl cluster-info &>/dev/null 2>&1; then
-            log_warn "Kubernetes cluster already initialized and accessible. Skipping initialization..."
-            configure_kubectl_shell
-            return 0
-        else
-            log_warn "Cluster files exist but cluster is not accessible. Attempting to continue..."
-        fi
-    fi
-    
-    # Check if ports are in use (partial initialization)
-    if sudo netstat -tlnp 2>/dev/null | grep -q ":6443.*LISTEN"; then
-        log_warn "Port 6443 is in use. Cluster may be partially initialized."
-        log_info "Setting up kubeconfig from existing config..."
-        mkdir -p $HOME/.kube
-        if [ -f /etc/kubernetes/super-admin.conf ]; then
-            sudo cp -i /etc/kubernetes/super-admin.conf $HOME/.kube/config
-        elif [ -f /etc/kubernetes/admin.conf ]; then
-            sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
-        fi
-        sudo chown $(id -u):$(id -g) $HOME/.kube/config
-        configure_kubectl_shell
-        
-        # Wait a moment and test
-        sleep 5
-        if kubectl cluster-info &>/dev/null 2>&1; then
-            log_info "Cluster is accessible. Continuing with configuration..."
-            return 0
-        else
-            log_error "Cluster files exist but cluster is not responding."
-            log_error "You may need to run: sudo kubeadm reset -f"
-            exit 1
-        fi
-    fi
-    
-    # Fresh initialization
-    sudo kubeadm init --pod-network-cidr=$POD_NETWORK_CIDR
-    
-    mkdir -p $HOME/.kube
-    # Prefer super-admin.conf if available (has full permissions)
-    if [ -f /etc/kubernetes/super-admin.conf ]; then
-        sudo cp -i /etc/kubernetes/super-admin.conf $HOME/.kube/config
-    else
-        sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
-    fi
-    sudo chown $(id -u):$(id -g) $HOME/.kube/config
-    
-    configure_kubectl_shell
-    
-    log_info "Kubernetes cluster initialized"
-}
-
 configure_kubectl_shell() {
     log_info "Configuring kubectl shell integration..."
     
-    # Add kubectl alias and completion to .bashrc if not already present
     if ! grep -q "alias k=kubectl" ~/.bashrc 2>/dev/null; then
         cat <<'EOF' >> ~/.bashrc
 
@@ -207,7 +150,6 @@ EOF
         log_info "kubectl alias and completion already configured"
     fi
     
-    # Source it for current shell
     if command -v kubectl &> /dev/null; then
         alias k=kubectl 2>/dev/null || true
         source <(kubectl completion bash) 2>/dev/null || true
@@ -215,6 +157,64 @@ EOF
     fi
     
     log_info "Shell integration configured. Run 'source ~/.bashrc' or start a new shell to use 'k' alias"
+}
+
+initialize_cluster() {
+    log_info "Initializing Kubernetes cluster..."
+    
+    if [ -f /etc/kubernetes/admin.conf ] || [ -f /etc/kubernetes/super-admin.conf ]; then
+        log_info "Kubernetes admin config found, setting up kubeconfig..."
+        mkdir -p $HOME/.kube
+        if [ -f /etc/kubernetes/super-admin.conf ]; then
+            sudo cp -i /etc/kubernetes/super-admin.conf $HOME/.kube/config 2>/dev/null || true
+        else
+            sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config 2>/dev/null || true
+        fi
+        sudo chown $(id -u):$(id -g) $HOME/.kube/config 2>/dev/null || true
+        
+        if kubectl cluster-info &>/dev/null 2>&1; then
+            log_warn "Kubernetes cluster already initialized and accessible. Skipping initialization..."
+            configure_kubectl_shell
+            return 0
+        fi
+    fi
+    
+    if sudo netstat -tlnp 2>/dev/null | grep -q ":6443.*LISTEN"; then
+        log_warn "Port 6443 is in use. Cluster may be partially initialized."
+        log_info "Setting up kubeconfig from existing config..."
+        mkdir -p $HOME/.kube
+        if [ -f /etc/kubernetes/super-admin.conf ]; then
+            sudo cp -i /etc/kubernetes/super-admin.conf $HOME/.kube/config
+        elif [ -f /etc/kubernetes/admin.conf ]; then
+            sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+        fi
+        sudo chown $(id -u):$(id -g) $HOME/.kube/config
+        configure_kubectl_shell
+        
+        sleep 5
+        if kubectl cluster-info &>/dev/null 2>&1; then
+            log_info "Cluster is accessible. Continuing with configuration..."
+            return 0
+        else
+            log_error "Cluster files exist but cluster is not responding."
+            log_error "You may need to run: sudo kubeadm reset -f"
+            exit 1
+        fi
+    fi
+    
+    sudo kubeadm init --pod-network-cidr=$POD_NETWORK_CIDR
+    
+    mkdir -p $HOME/.kube
+    if [ -f /etc/kubernetes/super-admin.conf ]; then
+        sudo cp -i /etc/kubernetes/super-admin.conf $HOME/.kube/config
+    else
+        sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+    fi
+    sudo chown $(id -u):$(id -g) $HOME/.kube/config
+    
+    configure_kubectl_shell
+    
+    log_info "Kubernetes cluster initialized"
 }
 
 configure_cluster() {
@@ -240,14 +240,12 @@ configure_cluster() {
 install_cni() {
     log_info "Installing Flannel CNI..."
     
-    # Check if Flannel is already installed and working
     if kubectl get namespace kube-flannel &>/dev/null 2>&1; then
         FLANNEL_PODS=$(kubectl get pods -n kube-flannel --no-headers 2>/dev/null | wc -l)
         if [ "$FLANNEL_PODS" -gt 0 ]; then
             log_warn "Flannel CNI already installed. Verifying it's working..."
             kubectl wait --for=condition=ready pod -l app=flannel -n kube-flannel --timeout=60s 2>/dev/null || true
             
-            # Check if node is Ready (indicates CNI is working)
             if kubectl get nodes -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q "True"; then
                 log_info "Flannel CNI is working (node is Ready)"
                 return 0
@@ -261,10 +259,8 @@ install_cni() {
     kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
     
     log_info "Waiting for Flannel pods to be ready..."
-    # Wait a moment for pods to be created
     sleep 5
     
-    # Wait for pods to exist first
     local max_wait=60
     local waited=0
     while [ $waited -lt $max_wait ]; do
@@ -278,7 +274,6 @@ install_cni() {
     kubectl wait --for=condition=ready pod -l app=flannel -n kube-flannel --timeout=300s || {
         log_warn "Flannel pods may not be ready yet, checking status..."
         kubectl get pods -n kube-flannel
-        # Don't fail - continue and let node Ready check determine if CNI is working
     }
     
     log_info "Waiting for node to become Ready (CNI initialization)..."
@@ -297,11 +292,7 @@ install_cni() {
     echo ""
     
     log_warn "Node did not become Ready within expected time, but continuing..."
-    log_info "Current node status:"
     kubectl get nodes
-    kubectl describe node | grep -A 5 "Conditions:" || true
-    
-    log_info "Flannel CNI installation completed (node may need more time to become Ready)"
 }
 
 install_helm() {
@@ -454,20 +445,9 @@ print_access_info() {
     echo ""
 }
 
-# Progress tracking
-PROGRESS_STEP=0
-TOTAL_STEPS=10
-
-show_progress() {
-    PROGRESS_STEP=$((PROGRESS_STEP + 1))
-    echo ""
-    echo -e "${BLUE}[$PROGRESS_STEP/$TOTAL_STEPS]${NC} $1"
-    echo "----------------------------------------"
-}
-
 # Main execution
 main() {
-    log_section "GPU Operator Stack Installation"
+    log_section "GPU Operator Stack Setup"
     log_info "This will install: Kubernetes, GPU Operator, Prometheus, Grafana"
     log_info "Estimated time: 15-20 minutes"
     echo ""
@@ -495,7 +475,6 @@ main() {
     show_progress "Installing Flannel CNI"
     install_cni
     
-    # Verify CNI is working before proceeding
     if ! kubectl get nodes -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q "True"; then
         log_warn "Node is not Ready yet. This may affect subsequent installations."
         log_info "You can check node status with: kubectl get nodes"
@@ -528,7 +507,7 @@ main() {
     
     echo ""
     log_info "=========================================="
-    log_info "Installation completed successfully!"
+    log_info "Setup completed successfully!"
     log_info "=========================================="
     echo ""
     echo "Next Steps:"
@@ -542,12 +521,11 @@ main() {
     echo "     kubectl get pods -n gpu-operator"
     echo "     kubectl get pods -n monitoring"
     echo ""
-    echo "  4. Access Grafana (see access information above)"
+    echo "  4. Follow DYNAMO_WORKSHOP_GUIDE.md for the workshop exercises"
     echo ""
     echo "Your environment is now 100% ready for the GPU saturation workshop!"
     echo ""
 }
 
-# Run main function
 main "$@"
 
