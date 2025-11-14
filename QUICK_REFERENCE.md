@@ -116,15 +116,25 @@ kubectl describe deployment -n dynamo-system grove-operator
 
 ### Helm "No Space Left on Device" Error
 ```bash
-# Quick fix: Clean Helm cache
-helm repo remove nvidia 2>/dev/null || true
-rm -rf ~/.cache/helm/repository/nvidia-index.yaml
-rm -rf ~/.cache/helm/repository/cache/*.tgz
+# Quick fix 1: Aggressive Helm cache cleanup
+rm -rf ~/.cache/helm
+mkdir -p ~/.cache/helm/repository
 helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
 helm repo update
 
-# Check disk space
+# Quick fix 2: Use /tmp for Helm cache
+export HELM_CACHE_HOME=/tmp/helm-cache-$(whoami)
+mkdir -p $HELM_CACHE_HOME
+helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+helm repo update
+
+# Quick fix 3: Skip repo, use OCI directly
+helm install dynamo-platform oci://nvcr.io/nvidia/helm-charts/dynamo-platform \
+  --version 0.6.0 --namespace dynamo-system --create-namespace
+
+# Check disk space and inodes
 df -h /home
+df -i /home
 
 # Fix kubeconfig permissions warning
 chmod 600 ~/.kube/config

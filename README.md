@@ -266,12 +266,20 @@ This workshop covers:
 
 ### Helm Repository Error?
 ```bash
-# "No space left on device" error
-helm repo remove nvidia 2>/dev/null || true
-rm -rf ~/.cache/helm/repository/nvidia-index.yaml
-rm -rf ~/.cache/helm/repository/cache/*.tgz
-helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
-helm repo update
+# "No space left on device" error - Try these in order:
+
+# Option 1: Aggressive cleanup
+rm -rf ~/.cache/helm && mkdir -p ~/.cache/helm/repository
+helm repo add nvidia https://helm.ngc.nvidia.com/nvidia && helm repo update
+
+# Option 2: Use /tmp instead
+export HELM_CACHE_HOME=/tmp/helm-cache-$(whoami)
+mkdir -p $HELM_CACHE_HOME
+helm repo add nvidia https://helm.ngc.nvidia.com/nvidia && helm repo update
+
+# Option 3: Skip repo, install directly from OCI
+helm install dynamo-platform oci://nvcr.io/nvidia/helm-charts/dynamo-platform \
+  --version 0.6.0 --namespace dynamo-system --create-namespace
 
 # Fix kubeconfig permissions warning
 chmod 600 ~/.kube/config

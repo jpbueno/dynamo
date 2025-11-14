@@ -78,6 +78,7 @@ kubectl config set-context --current --namespace=dynamo-system
 
 ### Step 3: Add NVIDIA Helm Repository
 
+**Standard Method:**
 ```bash
 # Add the NVIDIA Helm repository
 helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
@@ -87,6 +88,18 @@ helm repo update
 
 # Verify the dynamo-platform chart is available
 helm search repo nvidia/dynamo-platform
+```
+
+**Alternative Method (if you encounter "no space left on device" error):**
+```bash
+# Option A: Use /tmp for Helm cache
+export HELM_CACHE_HOME=/tmp/helm-cache-$(whoami)
+mkdir -p $HELM_CACHE_HOME
+helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+helm repo update
+
+# Option B: Skip repo entirely and use OCI registry directly
+# (No need to add repo - proceed directly to Step 5)
 ```
 
 ### Step 4: Configure Installation Values
@@ -180,6 +193,7 @@ EOF
 
 ### Step 5: Install the Dynamo Platform
 
+**Standard Method (using Helm repository):**
 ```bash
 # Install the Dynamo Platform using Helm
 helm install dynamo-platform nvidia/dynamo-platform \
@@ -194,6 +208,17 @@ helm install dynamo-platform nvidia/dynamo-platform \
 # NAMESPACE: dynamo-system
 # STATUS: deployed
 # REVISION: 1
+```
+
+**Alternative Method (using OCI registry directly - if repo add failed):**
+```bash
+# Install directly from OCI registry (no repo needed)
+helm install dynamo-platform oci://nvcr.io/nvidia/helm-charts/dynamo-platform \
+  --namespace dynamo-system \
+  --version 0.6.0 \
+  --values dynamo-values.yaml \
+  --wait \
+  --timeout 10m
 ```
 
 ### Step 6: Verify the Installation
@@ -330,28 +355,48 @@ du -sh ~/.cache/helm/* | sort -h
 **Solutions:**
 
 ```bash
-# Solution 1: Clean Helm cache (recommended)
-helm repo remove nvidia 2>/dev/null || true
-rm -rf ~/.cache/helm/repository/nvidia-index.yaml
-rm -rf ~/.cache/helm/repository/cache/*.tgz  # Remove old chart packages
+# Solution 1: Aggressive Helm cache cleanup (try this first)
+# Remove all Helm cache completely
+rm -rf ~/.cache/helm
+mkdir -p ~/.cache/helm/repository
 helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+helm repo update
 
-# Solution 2: Free up disk space
-# Check largest directories
-du -h --max-depth=1 ~ | sort -h | tail -10
+# Solution 2: Check if it's inode exhaustion (not just disk space)
+df -i /home  # Check inode usage
+# If inodes are at 100%, clean up small files:
+find ~/.cache -type f -size -1k -delete 2>/dev/null
+find /tmp -type f -atime +7 -delete 2>/dev/null
 
-# Clean up Docker if installed (optional)
-docker system prune -a --volumes 2>/dev/null || true
-
-# Clean up old Helm repositories
-helm repo list
-helm repo remove <unused-repo>  # Remove unused repos
-
-# Solution 3: Move Helm cache to a different location with more space
-# (if you have access to another disk)
-export HELM_CACHE_HOME=/path/to/larger/disk/.cache/helm
+# Solution 3: Use /tmp for Helm cache (if /tmp has more space)
+export HELM_CACHE_HOME=/tmp/helm-cache-$(whoami)
 mkdir -p $HELM_CACHE_HOME
 helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+helm repo update
+
+# Solution 4: Free up disk space more aggressively
+# Check what's using the most space
+du -h --max-depth=1 ~ 2>/dev/null | sort -h | tail -10
+du -h --max-depth=1 /tmp 2>/dev/null | sort -h | tail -10
+
+# Clean up common space hogs
+# Old logs
+find ~/.cache -type f -name "*.log" -mtime +7 -delete 2>/dev/null
+find /tmp -type f -mtime +1 -delete 2>/dev/null
+
+# Docker cleanup (if installed)
+docker system prune -a --volumes -f 2>/dev/null || true
+
+# Clean up package manager caches (if applicable)
+# For apt: sudo apt-get clean
+# For yum: sudo yum clean all
+
+# Solution 5: Workaround - Use helm directly without cache
+# Skip repo add and use direct chart URL
+helm install dynamo-platform oci://nvcr.io/nvidia/helm-charts/dynamo-platform \
+  --version 0.6.0 \
+  --namespace dynamo-system \
+  --create-namespace
 
 # Fix kubeconfig permissions (security warning)
 chmod 600 ~/.kube/config
