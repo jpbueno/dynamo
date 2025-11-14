@@ -109,7 +109,7 @@ The installation script will set up everything automatically:
 
 ```bash
 # Run the automated installation
-bash install-gpu-operator-stack.sh
+bash setup.sh
 ```
 
 **What gets installed:**
