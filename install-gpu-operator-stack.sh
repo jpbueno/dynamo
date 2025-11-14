@@ -241,15 +241,56 @@ configure_cluster() {
 install_cni() {
     log_info "Installing Flannel CNI..."
     
-    if kubectl get pods -n kube-flannel &>/dev/null 2>&1; then
-        log_warn "Flannel CNI already installed. Skipping..."
-        return 0
+    # Check if Flannel is already installed and working
+    if kubectl get namespace kube-flannel &>/dev/null 2>&1; then
+        FLANNEL_PODS=$(kubectl get pods -n kube-flannel --no-headers 2>/dev/null | wc -l)
+        if [ "$FLANNEL_PODS" -gt 0 ]; then
+            log_warn "Flannel CNI already installed. Verifying it's working..."
+            kubectl wait --for=condition=ready pod -l app=flannel -n kube-flannel --timeout=60s 2>/dev/null || true
+            
+            # Check if node is Ready (indicates CNI is working)
+            if kubectl get nodes -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q "True"; then
+                log_info "Flannel CNI is working (node is Ready)"
+                return 0
+            else
+                log_warn "Flannel installed but node not Ready. Reinstalling..."
+            fi
+        fi
     fi
     
+    log_info "Applying Flannel CNI manifest..."
     kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
-    kubectl wait --for=condition=ready pod -l app=flannel -n kube-flannel --timeout=300s || true
     
-    log_info "Flannel CNI installed"
+    log_info "Waiting for Flannel pods to be ready..."
+    kubectl wait --for=condition=ready pod -l app=flannel -n kube-flannel --timeout=300s || {
+        log_error "Flannel pods did not become ready in time"
+        log_info "Checking Flannel pod status..."
+        kubectl get pods -n kube-flannel
+        kubectl describe pods -n kube-flannel | tail -20
+        return 1
+    }
+    
+    log_info "Waiting for node to become Ready (CNI initialization)..."
+    local max_attempts=30
+    local attempt=0
+    while [ $attempt -lt $max_attempts ]; do
+        if kubectl get nodes -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q "True"; then
+            log_info "Node is Ready! CNI is working."
+            kubectl get nodes
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        echo -n "."
+        sleep 2
+    done
+    echo ""
+    
+    log_warn "Node did not become Ready within expected time, but continuing..."
+    log_info "Current node status:"
+    kubectl get nodes
+    kubectl describe node | grep -A 5 "Conditions:" || true
+    
+    log_info "Flannel CNI installation completed (node may need more time to become Ready)"
 }
 
 install_helm() {
@@ -399,10 +440,17 @@ main() {
     
     initialize_cluster
     configure_cluster
-    install_cni
     
     log_info "Waiting for CoreDNS to be ready..."
     kubectl wait --for=condition=ready pod -l k8s-app=kube-dns -n kube-system --timeout=300s || true
+    
+    install_cni
+    
+    # Verify CNI is working before proceeding
+    if ! kubectl get nodes -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q "True"; then
+        log_warn "Node is not Ready yet. This may affect subsequent installations."
+        log_info "You can check node status with: kubectl get nodes"
+    fi
     
     install_helm
     install_gpu_operator
