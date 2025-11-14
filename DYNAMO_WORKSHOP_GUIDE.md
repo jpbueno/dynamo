@@ -72,6 +72,84 @@ This workshop is organized into 5 phases:
 - **Basic Linux knowledge** (command line, file editing)
 - **Basic Kubernetes knowledge** (helpful but not required)
 
+### Remote Access Setup (Brev / Remote Server)
+
+If running the workshop on a **Brev environment** or **remote server** and accessing Grafana/Prometheus from your **local machine**:
+
+#### For Brev Environments
+
+**Step 1:** Get your Brev workspace name:
+```bash
+# On your local machine, install Brev CLI (if not already installed)
+# macOS: brew install brevdev/tap/brev
+# Linux: See https://github.com/brevdev/brev-cli
+
+# List your workspaces
+brev list
+
+# Your workspace name is typically your hostname (e.g., "shadecloud")
+```
+
+**Step 2:** On your **local machine**, create SSH tunnels with port forwarding:
+
+**Terminal 1 (Grafana):**
+```bash
+# Using Brev CLI
+brev ssh <workspace-name> -L 3000:localhost:3000
+
+# Example: brev ssh shadecloud -L 3000:localhost:3000
+```
+
+**Terminal 2 (Prometheus):**
+```bash
+# Using Brev CLI
+brev ssh <workspace-name> -L 9090:localhost:9090
+
+# Example: brev ssh shadecloud -L 9090:localhost:9090
+```
+
+**Step 3:** On the **Brev server** (in your existing SSH session), start port-forwards:
+
+**Terminal 1 (Grafana port-forward):**
+```bash
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+```
+
+**Terminal 2 (Prometheus port-forward):**
+```bash
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
+```
+
+**Step 4:** Access from your **local machine**:
+- Grafana: `http://localhost:3000`
+- Prometheus: `http://localhost:9090`
+
+**Note:** Keep both SSH tunnels and port-forwards running while using Grafana/Prometheus.
+
+#### For Generic Remote Servers
+
+**Step 1:** On your **local machine**, create SSH tunnels:
+```bash
+# Terminal 1: Grafana tunnel
+ssh -L 3000:localhost:3000 user@remote-server-ip
+
+# Terminal 2: Prometheus tunnel  
+ssh -L 9090:localhost:9090 user@remote-server-ip
+```
+
+**Step 2:** On the **remote server**, start port-forwards:
+```bash
+# Terminal 1: Grafana port-forward
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+
+# Terminal 2: Prometheus port-forward
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
+```
+
+**Step 3:** Access from your **local machine**:
+- Grafana: `http://localhost:3000`
+- Prometheus: `http://localhost:9090`
+
 ### Pre-installation Check
 
 ```bash
