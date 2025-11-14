@@ -124,18 +124,85 @@ install_containerd() {
 initialize_cluster() {
     log_info "Initializing Kubernetes cluster..."
     
-    if kubectl cluster-info &>/dev/null 2>&1; then
-        log_warn "Kubernetes cluster already initialized. Skipping..."
-        return 0
+    # Check if cluster is already initialized and working
+    if [ -f /etc/kubernetes/admin.conf ]; then
+        log_info "Kubernetes admin config found, setting up kubeconfig..."
+        mkdir -p $HOME/.kube
+        sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config 2>/dev/null || true
+        sudo chown $(id -u):$(id -g) $HOME/.kube/config 2>/dev/null || true
+        
+        # Test if cluster is accessible
+        if kubectl cluster-info &>/dev/null 2>&1; then
+            log_warn "Kubernetes cluster already initialized and accessible. Skipping initialization..."
+            configure_kubectl_shell
+            return 0
+        else
+            log_warn "Cluster files exist but cluster is not accessible. Attempting to continue..."
+        fi
     fi
     
+    # Check if ports are in use (partial initialization)
+    if sudo netstat -tlnp 2>/dev/null | grep -q ":6443.*LISTEN"; then
+        log_warn "Port 6443 is in use. Cluster may be partially initialized."
+        log_info "Setting up kubeconfig from existing admin.conf..."
+        mkdir -p $HOME/.kube
+        if [ -f /etc/kubernetes/admin.conf ]; then
+            sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+            sudo chown $(id -u):$(id -g) $HOME/.kube/config
+            configure_kubectl_shell
+            
+            # Wait a moment and test
+            sleep 5
+            if kubectl cluster-info &>/dev/null 2>&1; then
+                log_info "Cluster is accessible. Continuing with configuration..."
+                return 0
+            else
+                log_error "Cluster files exist but cluster is not responding."
+                log_error "You may need to run: sudo kubeadm reset -f"
+                exit 1
+            fi
+        fi
+    fi
+    
+    # Fresh initialization
     sudo kubeadm init --pod-network-cidr=$POD_NETWORK_CIDR
     
     mkdir -p $HOME/.kube
     sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
     sudo chown $(id -u):$(id -g) $HOME/.kube/config
     
+    configure_kubectl_shell
+    
     log_info "Kubernetes cluster initialized"
+}
+
+configure_kubectl_shell() {
+    log_info "Configuring kubectl shell integration..."
+    
+    # Add kubectl alias and completion to .bashrc if not already present
+    if ! grep -q "alias k=kubectl" ~/.bashrc 2>/dev/null; then
+        cat <<'EOF' >> ~/.bashrc
+
+# kubectl alias and completion
+if command -v kubectl &> /dev/null; then
+    alias k=kubectl
+    source <(kubectl completion bash)
+    complete -F __start_kubectl k
+fi
+EOF
+        log_info "Added kubectl alias and completion to ~/.bashrc"
+    else
+        log_info "kubectl alias and completion already configured"
+    fi
+    
+    # Source it for current shell
+    if command -v kubectl &> /dev/null; then
+        alias k=kubectl 2>/dev/null || true
+        source <(kubectl completion bash) 2>/dev/null || true
+        complete -F __start_kubectl k 2>/dev/null || true
+    fi
+    
+    log_info "Shell integration configured. Run 'source ~/.bashrc' or start a new shell to use 'k' alias"
 }
 
 configure_cluster() {
@@ -335,7 +402,23 @@ main() {
     verify_installation
     print_access_info
     
+    echo ""
     log_info "Installation script completed!"
+    echo ""
+    echo "=========================================="
+    echo "Next Steps:"
+    echo "=========================================="
+    echo ""
+    echo "1. Reload your shell configuration:"
+    echo "   source ~/.bashrc"
+    echo ""
+    echo "2. Or start a new terminal session to use 'k' alias"
+    echo ""
+    echo "3. Verify kubectl works:"
+    echo "   kubectl get nodes"
+    echo "   # or using alias:"
+    echo "   k get nodes"
+    echo ""
 }
 
 # Run main function
