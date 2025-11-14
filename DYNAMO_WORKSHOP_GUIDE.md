@@ -323,14 +323,16 @@ k logs gpu-workload-compute -f
 # Port-forward Prometheus
 k port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090 &
 
-# Query baseline GPU utilization
-curl -s 'http://localhost:9090/api/v1/query?query=DCGM_FI_DEV_GPU_UTIL' | jq '.data.result[0].value[1]'
-
-# Query baseline memory usage
-curl -s 'http://localhost:9090/api/v1/query?query=DCGM_FI_DEV_FB_USED' | jq '.data.result[0].value[1]'
+# Query baseline metrics (focus on the 3 key signals)
+curl -s 'http://localhost:9090/api/v1/query?query=DCGM_FI_PROF_SM_ACTIVE' | jq '.data.result[0].value[1]'
+curl -s 'http://localhost:9090/api/v1/query?query=DCGM_FI_PROF_DRAM_ACTIVE' | jq '.data.result[0].value[1]'
+curl -s 'http://localhost:9090/api/v1/query?query=DCGM_FI_PROF_PIPE_TENSOR_ACTIVE' | jq '.data.result[0].value[1]'
 
 # Document baseline values
 echo "Baseline Metrics:" > metrics-baseline.txt
+echo "SM Active: $(curl -s 'http://localhost:9090/api/v1/query?query=DCGM_FI_PROF_SM_ACTIVE' | jq -r '.data.result[0].value[1]')%" >> metrics-baseline.txt
+echo "DRAM Active: $(curl -s 'http://localhost:9090/api/v1/query?query=DCGM_FI_PROF_DRAM_ACTIVE' | jq -r '.data.result[0].value[1]')%" >> metrics-baseline.txt
+echo "Tensor Active: $(curl -s 'http://localhost:9090/api/v1/query?query=DCGM_FI_PROF_PIPE_TENSOR_ACTIVE' | jq -r '.data.result[0].value[1]')%" >> metrics-baseline.txt
 echo "GPU Utilization: $(curl -s 'http://localhost:9090/api/v1/query?query=DCGM_FI_DEV_GPU_UTIL' | jq -r '.data.result[0].value[1]')%" >> metrics-baseline.txt
 echo "Memory Used: $(curl -s 'http://localhost:9090/api/v1/query?query=DCGM_FI_DEV_FB_USED' | jq -r '.data.result[0].value[1]') bytes" >> metrics-baseline.txt
 cat metrics-baseline.txt
@@ -374,44 +376,77 @@ Create a comprehensive dashboard in Grafana:
 - **Visualization:** Time series
 - **Title:** "GPU Memory Usage (Bytes)"
 
-#### Panel 4: SM Occupancy
-- **Query:** `DCGM_FI_DEV_SM_OCCUPANCY{instance=~".*"}`
+#### Panel 4: SM Active (⭐ Critical - Real Compute Saturation)
+- **Query:** `DCGM_FI_PROF_SM_ACTIVE{instance=~".*"}`
 - **Visualization:** Time series
 - **Y-axis:** 0-100%
-- **Title:** "SM Occupancy (%)"
+- **Title:** "SM Active (%) - Real Compute Saturation"
+- **Note:** This is the most important metric for true saturation detection
 
-#### Panel 5: Power Usage
+#### Panel 5: DRAM Active (⭐ Memory Bandwidth Saturation)
+- **Query:** `DCGM_FI_PROF_DRAM_ACTIVE{instance=~".*"}`
+- **Visualization:** Time series
+- **Y-axis:** 0-100%
+- **Title:** "DRAM Active (%) - Memory Bandwidth Saturation"
+
+#### Panel 6: Tensor Active (⭐ AI/LLM Workloads)
+- **Query:** `DCGM_FI_PROF_PIPE_TENSOR_ACTIVE{instance=~".*"}`
+- **Visualization:** Time series
+- **Y-axis:** 0-100%
+- **Title:** "Tensor Core Active (%) - AI Workload Saturation"
+
+#### Panel 7: Power Usage
 - **Query:** `DCGM_FI_DEV_POWER_USAGE{instance=~".*"}`
 - **Visualization:** Time series
 - **Title:** "Power Usage (Watts)"
 
-#### Panel 6: Temperature
+#### Panel 8: Temperature
 - **Query:** `DCGM_FI_DEV_GPU_TEMP{instance=~".*"}`
 - **Visualization:** Time series
 - **Title:** "GPU Temperature (°C)"
 
-#### Panel 7: PCIe RX Throughput
+#### Panel 9: PCIe RX Throughput
 - **Query:** `DCGM_FI_DEV_PCIE_RX_THROUGHPUT{instance=~".*"}`
 - **Visualization:** Time series
 - **Title:** "PCIe RX Throughput (Bytes/s)"
 
-#### Panel 8: PCIe TX Throughput
+#### Panel 10: PCIe TX Throughput
 - **Query:** `DCGM_FI_DEV_PCIE_TX_THROUGHPUT{instance=~".*"}`
 - **Visualization:** Time series
 - **Title:** "PCIe TX Throughput (Bytes/s)"
+
+#### Panel 11: Saturation Index (Calculated)
+- **Query:** 
+```promql
+# Combined saturation indicator (0-100%)
+(
+  avg_over_time(DCGM_FI_PROF_SM_ACTIVE[5m]) * 0.5 +
+  avg_over_time(DCGM_FI_PROF_DRAM_ACTIVE[5m]) * 0.3 +
+  avg_over_time(DCGM_FI_PROF_PIPE_TENSOR_ACTIVE[5m]) * 0.2
+)
+```
+- **Visualization:** Gauge or Stat
+- **Y-axis:** 0-100%
+- **Title:** "GPU Saturation Index (%)"
+- **Thresholds:** Green: 0-70%, Yellow: 70-85%, Red: 85-100%
 
 ### Step 4.4: Observe Saturation Metrics
 
 Watch the dashboard for 5-10 minutes and document:
 
 ```bash
-# Create saturation metrics file
+# Create saturation metrics file (focus on the 3 key signals)
 cat > metrics-saturation.txt <<EOF
 Saturation Metrics (after 5 minutes of load):
 ============================================
+⭐ THE 3 KEY SIGNALS:
+SM Active: ______% (Most important - real compute saturation)
+DRAM Active: ______% (Memory bandwidth saturation)
+Tensor Active: ______% (AI workload saturation)
+
+Supporting Metrics:
 GPU Utilization: ______%
 Memory Utilization: ______%
-SM Occupancy: ______%
 Power Usage: ______W
 Temperature: ______°C
 PCIe RX: ______GB/s
@@ -429,101 +464,137 @@ EOF
 
 Analyze your metrics using this decision tree:
 
-#### Scenario A: Compute-Bound Workload
-**Indicators:**
-- GPU Utilization: **>90%**
-- Memory Utilization: **<50%**
-- SM Occupancy: **>80%**
-- Power Usage: **High (near TDP)**
+#### Scenario A: Compute-Saturated (Ideal for AI/LLM workloads)
+- **Root Cause:** Fully compute-bound workload
+- **Key Indicators:**
+  - **SM Active: ≥85-90%** ⭐ (Primary indicator)
+  - **Tensor Active: ≥90%** (for AI workloads)
+  - DRAM Active: Low (<50%)
+  - GPU Utilization: High (>90%)
+  - Power Usage: High (near TDP)
+- **Interpretation:** GPU is fully fed and compute-saturated
+- **Solution:** Already optimal! Consider: increase batch size, use mixed precision, optimize kernels
 
-**Root Cause:** Workload is limited by compute capacity, not memory bandwidth.
+#### Scenario B: Memory-Bound
+- **Root Cause:** Memory bandwidth is the bottleneck
+- **Key Indicators:**
+  - **DRAM Active: >80%** ⭐ (Primary indicator)
+  - **SM Active: Low (<50%)** (stalled waiting for memory)
+  - GPU Utilization: May appear high but not truly saturated
+  - Memory Used: High (near total GPU memory)
+  - Tensor Active: Low (<10%)
+- **Interpretation:** GPU cores are waiting for memory, not compute-saturated
+- **Solution:** Reduce memory footprint, optimize memory access patterns, use mixed precision, increase memory bandwidth utilization
 
-**Solutions:**
-- Optimize compute kernels
-- Use Tensor Cores (if available)
-- Increase batch size
-- Use mixed precision (FP16/BF16)
+#### Scenario C: Input-Bound (I/O Bottleneck)
+- **Root Cause:** Data pipeline bottleneck (CPU, network, disk)
+- **Key Indicators:**
+  - **SM Active: Low (<20%)** ⭐ (Primary indicator)
+  - **DRAM Active: Low (<10%)**
+  - **Tensor Active: Low (<10%)**
+  - PCIe RX/TX: May be high or low
+  - GPU Utilization: Low (<50%)
+- **Interpretation:** GPU is idle waiting for data
+- **Solution:** Optimize data pipeline, use data prefetching, increase batch size, optimize data loader, check CPU/network bottlenecks
 
-#### Scenario B: Memory-Bound Workload
-**Indicators:**
-- GPU Utilization: **>90%**
-- Memory Utilization: **>80%**
-- Memory Used: **Near total GPU memory**
-- SM Occupancy: **Lower (<50%) due to memory stalls**
+#### Scenario D: PCIe-Bound
+- **Root Cause:** Data transfer bottleneck between CPU and GPU
+- **Key Indicators:**
+  - **PCIe RX/TX: High (>30% of PCIe bandwidth)** ⭐
+  - **SM Active: Low (<50%)**
+  - DRAM Active: Variable
+  - GPU Utilization: Low (<50%)
+- **Interpretation:** GPU is stalled waiting for host transfers
+- **Solution:** Optimize data pipeline, use pinned memory, overlap computation and transfer, increase batch size
 
-**Root Cause:** Workload is limited by memory bandwidth or capacity.
+#### Scenario E: Thermal Throttling
+- **Root Cause:** GPU overheating
+- **Key Indicators:**
+  - Temperature: **>85°C** ⭐
+  - Power Usage: May drop due to throttling
+  - SM Active: May fluctuate
+  - GPU Utilization: May fluctuate
+- **Interpretation:** GPU is throttling performance to prevent overheating
+- **Solution:** Improve cooling, reduce power limit, optimize workload to reduce heat generation
 
-**Solutions:**
-- Reduce memory footprint
-- Optimize memory access patterns
-- Use mixed precision to reduce memory usage
-- Increase memory bandwidth utilization
+#### Scenario F: Kernel Efficiency Issues
+- **Root Cause:** Kernels not efficiently utilizing GPU resources
+- **Key Indicators:**
+  - **SM Active: Low (<50%)** despite high GPU Utilization ⭐
+  - GPU Utilization: High (>90%) but misleading
+  - DRAM Active: Variable
+  - Power Usage: Lower than expected
+- **Interpretation:** GPU appears busy but cores aren't doing useful work
+- **Solution:** Optimize kernel launch configuration, increase occupancy, reduce register usage, check for kernel gaps (use Nsight Systems)
 
-#### Scenario C: I/O-Bound Workload
-**Indicators:**
-- GPU Utilization: **<50%**
-- PCIe RX/TX: **High (>30% of PCIe bandwidth)**
-- Memory Utilization: **Variable**
-
-**Root Cause:** Data transfer bottleneck between CPU and GPU.
-
-**Solutions:**
-- Optimize data pipeline
-- Use data prefetching
-- Increase batch size
-- Use pinned memory
-- Overlap computation and data transfer
-
-#### Scenario D: Thermal Throttling
-**Indicators:**
-- Temperature: **>85°C**
-- Power Usage: **May drop due to throttling**
-- GPU Utilization: **May fluctuate**
-
-**Root Cause:** GPU is overheating and throttling performance.
-
-**Solutions:**
-- Improve cooling
-- Reduce power limit
-- Optimize workload to reduce heat generation
-- Check thermal paste and fans
-
-#### Scenario E: Kernel Efficiency Issues
-**Indicators:**
-- GPU Utilization: **>90%**
-- SM Occupancy: **<50%**
-- Memory Utilization: **Variable**
-
-**Root Cause:** Kernels are not efficiently utilizing GPU resources.
-
-**Solutions:**
-- Optimize kernel launch configuration
-- Increase occupancy (reduce register usage)
-- Improve thread block size
-- Reduce kernel overhead
+#### Scenario G: Mixed Workload (HPC-style)
+- **Root Cause:** Balanced compute and memory usage
+- **Key Indicators:**
+  - **SM Active: High (80-90%)**
+  - **DRAM Active: High (80-90%)**
+  - Tensor Active: Low (<10%) (not using specialized units)
+  - GPU Utilization: High (>90%)
+- **Interpretation:** Balanced workload, both compute and memory are active
+- **Solution:** This is normal for HPC workloads. Consider: optimize for specific bottleneck if needed
 
 ### Step 5.2: Prometheus Queries for Analysis
 
 Use these queries in Prometheus to analyze your workload:
 
+#### The 3 Critical Saturation Signals
+
 ```promql
-# Average GPU Utilization (5 minutes)
+# 1. SM Active - Real compute saturation (MOST IMPORTANT)
+avg_over_time(DCGM_FI_PROF_SM_ACTIVE[5m])
+
+# 2. DRAM Active - Memory bandwidth saturation
+avg_over_time(DCGM_FI_PROF_DRAM_ACTIVE[5m])
+
+# 3. Tensor Active - AI/LLM workload saturation
+avg_over_time(DCGM_FI_PROF_PIPE_TENSOR_ACTIVE[5m])
+```
+
+#### Supporting Metrics
+
+```promql
+# GPU Utilization (coarse-grained, less accurate)
 avg_over_time(DCGM_FI_DEV_GPU_UTIL[5m])
 
 # Memory utilization percentage
 (avg_over_time(DCGM_FI_DEV_FB_USED[5m]) / avg_over_time(DCGM_FI_DEV_FB_TOTAL[5m])) * 100
 
 # Power efficiency (utilization per watt)
-avg_over_time(DCGM_FI_DEV_GPU_UTIL[5m]) / avg_over_time(DCGM_FI_DEV_POWER_USAGE[5m])
+avg_over_time(DCGM_FI_PROF_SM_ACTIVE[5m]) / avg_over_time(DCGM_FI_DEV_POWER_USAGE[5m])
 
-# Check for thermal throttling
+# Check for thermal throttling (temperature > 85°C)
 DCGM_FI_DEV_GPU_TEMP > 85
 
-# PCIe bandwidth utilization (assuming PCIe 3.0 x16 = 16 GB/s)
+# PCIe bandwidth utilization
 (avg_over_time(DCGM_FI_DEV_PCIE_RX_THROUGHPUT[5m]) + avg_over_time(DCGM_FI_DEV_PCIE_TX_THROUGHPUT[5m])) / 16e9 * 100
 
-# SM Occupancy
-avg_over_time(DCGM_FI_DEV_SM_OCCUPANCY[5m])
+# Combined Saturation Index
+(
+  avg_over_time(DCGM_FI_PROF_SM_ACTIVE[5m]) * 0.5 +
+  avg_over_time(DCGM_FI_PROF_DRAM_ACTIVE[5m]) * 0.3 +
+  avg_over_time(DCGM_FI_PROF_PIPE_TENSOR_ACTIVE[5m]) * 0.2
+)
+```
+
+#### Saturation Detection Queries
+
+```promql
+# Is GPU compute-saturated? (SM Active >= 85%)
+DCGM_FI_PROF_SM_ACTIVE >= 85
+
+# Is GPU memory-bound? (DRAM Active > 80% AND SM Active < 50%)
+DCGM_FI_PROF_DRAM_ACTIVE > 80 and DCGM_FI_PROF_SM_ACTIVE < 50
+
+# Is GPU input-bound? (SM Active < 20% AND DRAM Active < 10%)
+DCGM_FI_PROF_SM_ACTIVE < 20 and DCGM_FI_PROF_DRAM_ACTIVE < 10
+
+# Is GPU PCIe-bound? (High PCIe usage AND low SM Active)
+(avg_over_time(DCGM_FI_DEV_PCIE_RX_THROUGHPUT[5m]) + avg_over_time(DCGM_FI_DEV_PCIE_TX_THROUGHPUT[5m])) / 16e9 * 100 > 30 
+  and DCGM_FI_PROF_SM_ACTIVE < 50
 ```
 
 ### Step 5.3: Create Analysis Report
@@ -545,9 +616,11 @@ $(cat metrics-saturation.txt)
 
 Root Cause Analysis:
 --------------------
-Scenario Identified: [A/B/C/D/E]
+Scenario Identified: [A/B/C/D/E/F/G]
 Evidence:
 - [List key metrics that support your conclusion]
+- **Which of the 3 key signals (SM Active, DRAM Active, Tensor Active) were most indicative?**
+- Is the GPU truly saturated or just appearing busy?
 
 Recommendations:
 ----------------
