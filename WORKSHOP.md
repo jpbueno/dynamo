@@ -1,59 +1,57 @@
-# NVIDIA GPU Operator & DCGM Metrics - Workshop Guide
+# GPU Operator & DCGM Metrics Workshop
 
-> A hands-on workshop guide for installing, configuring, and using NVIDIA GPU Operator with DCGM metrics for GPU profiling and monitoring
+> Hands-on workshop: Install Kubernetes with GPU Operator, configure DCGM metrics export to Prometheus/Grafana, and learn to identify GPU saturation root causes
 
 ## 📖 Table of Contents
 
-1. [Overview](#overview)
+1. [Workshop Objectives](#workshop-objectives)
 2. [Workshop Quick Start](#workshop-quick-start)
-3. [NVIDIA GPU Operator Fundamentals](#nvidia-gpu-operator-fundamentals)
-4. [DCGM (Data Center GPU Manager) Deep Dive](#dcgm-data-center-gpu-manager-deep-dive)
-5. [DCGM Metrics for Profiling](#dcgm-metrics-for-profiling)
-6. [Interpreting Metrics](#interpreting-metrics)
-7. [Setting Up Prometheus and Grafana for DCGM Metrics](#setting-up-prometheus-and-grafana-for-dcgm-metrics)
-8. [Practical Examples](#practical-examples)
-9. [Troubleshooting](#troubleshooting)
-10. [Workshop Cleanup](#workshop-cleanup)
-11. [Resources & Next Steps](#resources--next-steps)
+3. [Phase 1: Installation](#phase-1-installation)
+4. [Phase 2: Verification](#phase-2-verification)
+5. [Phase 3: GPU Saturation Exercise](#phase-3-gpu-saturation-exercise)
+6. [Understanding DCGM Metrics](#understanding-dcgm-metrics)
+7. [Troubleshooting](#troubleshooting)
+8. [Workshop Cleanup](#workshop-cleanup)
+9. [Resources & Next Steps](#resources--next-steps)
 
 ---
 
-## Overview
+## Workshop Objectives
 
-### What is NVIDIA GPU Operator?
+By the end of this workshop, you will:
 
-The **NVIDIA GPU Operator** is a Kubernetes operator that manages GPU resources in Kubernetes clusters. It automates the deployment and management of:
+1. ✅ **Install and configure a fully operational Kubernetes cluster** on a GPU-enabled instance
+2. ✅ **Install and configure NVIDIA GPU Operator** to manage GPU resources
+3. ✅ **Configure DCGM Exporter** to export GPU metrics to Prometheus
+4. ✅ **Set up Prometheus and Grafana** for metrics visualization
+5. ✅ **Complete a hands-on exercise** to measure GPU saturation and identify root causes
 
-- **NVIDIA Device Plugin** - Exposes GPUs to Kubernetes
-- **NVIDIA Container Toolkit** - Enables GPU access in containers
-- **NVIDIA Driver** - GPU drivers for the host
-- **DCGM Exporter** - Exposes GPU metrics to Prometheus
-- **GPU Feature Discovery** - Labels nodes with GPU capabilities
-- **Node Feature Discovery** - Detects hardware features
+### Workshop Overview
 
-### Why DCGM Matters
+This workshop focuses on practical, hands-on experience with:
+- **Kubernetes cluster setup** - Single-node kubeadm cluster
+- **GPU Operator** - Automated GPU resource management
+- **DCGM Metrics** - Real-time GPU performance data
+- **Monitoring Stack** - Prometheus and Grafana integration
+- **Root Cause Analysis** - Identifying GPU saturation bottlenecks
 
-**DCGM (Data Center GPU Manager)** is NVIDIA's tool for monitoring, managing, and profiling GPUs in data centers. It provides:
+### Prerequisites
 
-- **Real-time GPU metrics** - Performance, health, and utilization
-- **Profiling capabilities** - Detailed performance analysis
-- **Health monitoring** - Early detection of issues
-- **Telemetry** - Integration with monitoring stacks (Prometheus, Grafana)
+- Ubuntu 22.04 server with GPU support
+- Internet connectivity
+- Sudo access
+- Basic understanding of Kubernetes and Linux
+
+**Estimated Time:** 2-3 hours
 
 ---
 
 ## Workshop Quick Start
 
-### Workshop Overview
-
-This workshop will guide you through:
-1. **Installation** - Setting up Kubernetes, GPU Operator, and monitoring stack
-2. **Configuration** - Configuring Prometheus and Grafana for DCGM metrics
-3. **Profiling** - Learning to interpret DCGM metrics for GPU workload optimization
-4. **Cleanup** - Cleaning up resources after the workshop
-
-**Estimated Time:** 2-3 hours  
-**Prerequisites:** Ubuntu 22.04 server with GPU and sudo access
+This workshop is structured in three main phases:
+1. **Installation** - Set up Kubernetes cluster, GPU Operator, and monitoring stack
+2. **Verification** - Verify DCGM metrics are being exported to Prometheus/Grafana
+3. **Exercise** - Measure GPU saturation and identify root causes
 
 ### Step 1: Installation (15-20 minutes)
 
@@ -80,13 +78,15 @@ bash install-gpu-operator-stack.sh
 3. Configure Prometheus data source in Grafana (see [Prometheus/Grafana Setup](#setting-up-prometheus-and-grafana-for-dcgm-metrics))
 4. Start profiling GPU workloads!
 
-### Step 2: Follow the Workshop Exercises
+### Step 2: Verification
 
-Continue with the sections below to learn about:
-- GPU Operator architecture and components
-- DCGM metrics and their interpretation
-- Setting up monitoring dashboards
-- Practical profiling examples
+After installation completes, verify everything is working:
+1. Check Kubernetes cluster: `kubectl get nodes`
+2. Check GPU Operator: `kubectl get pods -n gpu-operator`
+3. Check DCGM Exporter: `kubectl get pods -n gpu-operator -l app=nvidia-dcgm-exporter`
+4. Check Prometheus/Grafana: `kubectl get pods -n monitoring`
+
+See [Phase 2: Verification](#phase-2-verification) for detailed verification steps.
 
 ### Step 3: Cleanup After Workshop
 
@@ -984,101 +984,282 @@ curl -s "http://localhost:9090/api/v1/query?query=DCGM_FI_DEV_GPU_UTIL" | jq '.d
 
 ---
 
-## Practical Examples
+## Phase 3: GPU Saturation Exercise
 
-### Example 1: Querying DCGM Metrics via Prometheus
+### Exercise Objective
+
+**Goal:** Measure GPU saturation and identify the root cause of performance bottlenecks.
+
+In this exercise, you will:
+1. Deploy a GPU workload that causes saturation
+2. Collect DCGM metrics using Prometheus
+3. Analyze metrics in Grafana to identify root causes
+4. Determine if the bottleneck is compute-bound, memory-bound, or I/O-bound
+
+### Exercise Setup
+
+#### Step 1: Deploy a GPU Workload
+
+Create a sample GPU workload that will stress different GPU resources:
 
 ```bash
-# Port-forward DCGM Exporter
-kubectl port-forward -n gpu-operator svc/nvidia-dcgm-exporter 9400:9400
-
-# Query GPU utilization
-curl http://localhost:9400/metrics | grep DCGM_FI_DEV_GPU_UTIL
-
-# Query memory usage
-curl http://localhost:9400/metrics | grep DCGM_FI_DEV_FB_USED
+# Create a GPU workload manifest
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-workload
+spec:
+  restartPolicy: Never
+  containers:
+  - name: cuda-workload
+    image: nvidia/cuda:12.0.0-base-ubuntu22.04
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      nvidia-smi -l 1 &
+      # Run compute-intensive workload
+      while true; do
+        python3 -c "
+import time
+import numpy as np
+# Simulate compute-intensive operations
+a = np.random.rand(10000, 10000).astype(np.float32)
+b = np.random.rand(10000, 10000).astype(np.float32)
+for _ in range(100):
+    c = np.dot(a, b)
+time.sleep(0.1)
+        "
+      done
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+EOF
 ```
 
-### Example 2: Using DCGM CLI
+**Note:** This workload simulates compute-intensive operations. For real workloads, use your actual GPU application.
 
-```bash
-# Install DCGM CLI (if not already installed)
-# On GPU node:
-docker run --rm --gpus all nvcr.io/nvidia/k8s/dcgm:3.1.8-3.1.5-ubuntu22.04 dcgmi
+#### Step 2: Monitor GPU Metrics
 
-# Monitor GPU in real-time
-dcgmi dmon -e 155,150,100,203,252,155 -d 1
+Open Grafana and create a new dashboard with these panels:
 
-# Field IDs:
-# 155 = GPU Utilization
-# 150 = Memory Utilization  
-# 100 = Memory Used
-# 203 = Power Usage
-# 252 = Temperature
-# 155 = SM Occupancy
+**Panel 1: GPU Utilization**
+```promql
+DCGM_FI_DEV_GPU_UTIL{instance=~".*"}
 ```
+- Visualization: Time series
+- Y-axis: 0-100%
+- Title: "GPU Utilization (%)"
 
-### Example 3: Prometheus Queries
+**Panel 2: Memory Utilization**
+```promql
+(DCGM_FI_DEV_FB_USED{instance=~".*"} / DCGM_FI_DEV_FB_TOTAL{instance=~".*"}) * 100
+```
+- Visualization: Time series
+- Y-axis: 0-100%
+- Title: "GPU Memory Utilization (%)"
+
+**Panel 3: Memory Used vs Total**
+```promql
+DCGM_FI_DEV_FB_USED{instance=~".*"}
+DCGM_FI_DEV_FB_TOTAL{instance=~".*"}
+```
+- Visualization: Time series
+- Title: "GPU Memory Usage (Bytes)"
+
+**Panel 4: SM (Streaming Multiprocessor) Utilization**
+```promql
+DCGM_FI_DEV_SM_OCCUPANCY{instance=~".*"}
+```
+- Visualization: Time series
+- Y-axis: 0-100%
+- Title: "SM Occupancy (%)"
+
+**Panel 5: Power Usage**
+```promql
+DCGM_FI_DEV_POWER_USAGE{instance=~".*"}
+```
+- Visualization: Time series
+- Title: "Power Usage (Watts)"
+
+**Panel 6: Temperature**
+```promql
+DCGM_FI_DEV_GPU_TEMP{instance=~".*"}
+```
+- Visualization: Time series
+- Title: "GPU Temperature (°C)"
+
+**Panel 7: PCIe RX Throughput**
+```promql
+DCGM_FI_DEV_PCIE_RX_THROUGHPUT{instance=~".*"}
+```
+- Visualization: Time series
+- Title: "PCIe RX Throughput (Bytes/s)"
+
+**Panel 8: PCIe TX Throughput**
+```promql
+DCGM_FI_DEV_PCIE_TX_THROUGHPUT{instance=~".*"}
+```
+- Visualization: Time series
+- Title: "PCIe TX Throughput (Bytes/s)"
+
+### Exercise Tasks
+
+#### Task 1: Baseline Measurement
+
+1. **Before starting the workload**, collect baseline metrics:
+   ```bash
+   # Query Prometheus for current GPU state
+   kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090 &
+   
+   # In another terminal, query metrics
+   curl 'http://localhost:9090/api/v1/query?query=DCGM_FI_DEV_GPU_UTIL' | jq
+   ```
+
+2. **Document baseline values:**
+   - GPU Utilization: Should be near 0%
+   - Memory Used: Should be minimal
+   - Power Usage: Idle power consumption
+   - Temperature: Idle temperature
+
+#### Task 2: Run Workload and Observe Saturation
+
+1. **Deploy the workload** (from Step 1 above)
+
+2. **Wait 2-3 minutes** for metrics to stabilize
+
+3. **Observe metrics in Grafana dashboard**
+
+4. **Document saturation values:**
+   - GPU Utilization: ______%
+   - Memory Utilization: ______%
+   - SM Occupancy: ______%
+   - Power Usage: ______W
+   - Temperature: ______°C
+
+#### Task 3: Root Cause Analysis
+
+Use the following decision tree to identify the root cause:
+
+**Scenario A: High GPU Utilization (>90%) + Low Memory Utilization (<50%)**
+- **Root Cause:** Compute-bound workload
+- **Indicators:**
+  - GPU Utilization: High (>90%)
+  - Memory Utilization: Low (<50%)
+  - SM Occupancy: High (>80%)
+  - Power Usage: High (near TDP)
+- **Solution:** Optimize compute kernels, use Tensor Cores, increase batch size
+
+**Scenario B: High GPU Utilization (>90%) + High Memory Utilization (>80%)**
+- **Root Cause:** Memory-bound workload
+- **Indicators:**
+  - GPU Utilization: High (>90%)
+  - Memory Utilization: High (>80%)
+  - Memory Used: Near total GPU memory
+  - SM Occupancy: May be lower due to memory stalls
+- **Solution:** Reduce memory footprint, optimize memory access patterns, use mixed precision
+
+**Scenario C: Low GPU Utilization (<50%) + High PCIe Throughput**
+- **Root Cause:** I/O-bound workload (data transfer bottleneck)
+- **Indicators:**
+  - GPU Utilization: Low (<50%)
+  - PCIe RX/TX: High (>30% of PCIe bandwidth)
+  - Memory Utilization: Variable
+- **Solution:** Optimize data pipeline, use data prefetching, increase batch size
+
+**Scenario D: High GPU Utilization + High Temperature (>85°C)**
+- **Root Cause:** Thermal throttling
+- **Indicators:**
+  - Temperature: High (>85°C)
+  - Power Usage: May drop due to throttling
+  - GPU Utilization: May fluctuate
+- **Solution:** Improve cooling, reduce power limit, optimize workload
+
+**Scenario E: High GPU Utilization + Low SM Occupancy (<50%)**
+- **Root Cause:** Kernel efficiency issues
+- **Indicators:**
+  - GPU Utilization: High (>90%)
+  - SM Occupancy: Low (<50%)
+  - Memory Utilization: Variable
+- **Solution:** Optimize kernel launch configuration, increase occupancy, reduce register usage
+
+#### Task 4: Create Analysis Report
+
+Create a report documenting:
+
+1. **Baseline Metrics:**
+   ```
+   GPU Utilization: X%
+   Memory Used: X GB / X GB
+   Power: X W
+   Temperature: X°C
+   ```
+
+2. **Saturation Metrics:**
+   ```
+   GPU Utilization: X%
+   Memory Utilization: X%
+   SM Occupancy: X%
+   Power: X W
+   Temperature: X°C
+   PCIe RX: X GB/s
+   PCIe TX: X GB/s
+   ```
+
+3. **Root Cause Identification:**
+   - Which scenario matches your workload? (A, B, C, D, or E)
+   - What evidence supports this conclusion?
+   - What metrics were most indicative?
+
+4. **Recommendations:**
+   - What optimizations would you recommend?
+   - What additional metrics would help confirm the root cause?
+
+### Exercise Prometheus Queries
+
+Use these queries in Prometheus to analyze GPU saturation:
 
 ```promql
-# GPU Utilization (average across all GPUs)
-avg(DCGM_FI_DEV_GPU_UTIL) by (instance, uuid)
+# Average GPU Utilization over last 5 minutes
+avg_over_time(DCGM_FI_DEV_GPU_UTIL[5m])
 
-# Memory Usage Percentage
-(DCGM_FI_DEV_FB_USED / DCGM_FI_DEV_FB_TOTAL) * 100
+# Memory utilization percentage
+(avg_over_time(DCGM_FI_DEV_FB_USED[5m]) / avg_over_time(DCGM_FI_DEV_FB_TOTAL[5m])) * 100
 
-# Power Usage (watts)
-DCGM_FI_DEV_POWER_USAGE
+# Power efficiency (utilization per watt)
+avg_over_time(DCGM_FI_DEV_GPU_UTIL[5m]) / avg_over_time(DCGM_FI_DEV_POWER_USAGE[5m])
 
-# Temperature
-DCGM_FI_DEV_GPU_TEMP
+# Check for thermal throttling (temperature > 85°C)
+DCGM_FI_DEV_GPU_TEMP > 85
 
-# Tensor Core Utilization
-DCGM_FI_DEV_TENSOR_ACTIVE
+# PCIe bandwidth utilization
+(avg_over_time(DCGM_FI_DEV_PCIE_RX_THROUGHPUT[5m]) + avg_over_time(DCGM_FI_DEV_PCIE_TX_THROUGHPUT[5m])) / 32e9 * 100
 
-# PCIe Bandwidth Utilization
-(DCGM_FI_DEV_PCIE_RX_THROUGHPUT + DCGM_FI_DEV_PCIE_TX_THROUGHPUT) / PCIe_Max_Bandwidth * 100
+# SM Occupancy (if available)
+avg_over_time(DCGM_FI_DEV_SM_OCCUPANCY[5m])
 ```
 
-### Example 4: Grafana Dashboard
+### Exercise Checklist
 
-Create a Grafana dashboard with these panels:
+- [ ] Kubernetes cluster is operational
+- [ ] GPU Operator is installed and running
+- [ ] DCGM Exporter is collecting metrics
+- [ ] Prometheus is scraping DCGM metrics
+- [ ] Grafana is configured with Prometheus data source
+- [ ] Baseline metrics collected
+- [ ] GPU workload deployed
+- [ ] Saturation metrics observed
+- [ ] Root cause identified using decision tree
+- [ ] Analysis report created
 
-1. **GPU Utilization** - Line graph, 0-100%
-2. **Memory Usage** - Gauge, 0-100%
-3. **Power Draw** - Line graph, watts
-4. **Temperature** - Line graph, Celsius
-5. **Tensor Core Usage** - Line graph, 0-100%
-6. **PCIe Bandwidth** - Line graph, GB/s
-7. **ECC Errors** - Counter, total errors
+### Expected Outcomes
 
-### Example 5: Profiling Script
-
-```bash
-#!/bin/bash
-# Profile GPU workload
-
-# Start monitoring
-kubectl port-forward -n gpu-operator svc/nvidia-dcgm-exporter 9400:9400 &
-PF_PID=$!
-
-# Wait for port-forward
-sleep 2
-
-# Collect metrics for 60 seconds
-for i in {1..60}; do
-    echo "=== Sample $i ===" >> metrics.log
-    curl -s http://localhost:9400/metrics | grep -E "DCGM_FI_DEV_GPU_UTIL|DCGM_FI_DEV_FB_USED|DCGM_FI_DEV_POWER_USAGE" >> metrics.log
-    sleep 1
-done
-
-# Stop port-forward
-kill $PF_PID
-
-# Analyze results
-echo "=== Analysis ==="
-grep DCGM_FI_DEV_GPU_UTIL metrics.log | awk '{print $2}' | awk '{sum+=$1; count++} END {print "Avg GPU Util:", sum/count"%"}'
-```
+After completing this exercise, you should be able to:
+- ✅ Deploy GPU workloads on Kubernetes
+- ✅ Collect and visualize DCGM metrics
+- ✅ Identify GPU saturation patterns
+- ✅ Determine root causes of performance bottlenecks
+- ✅ Make data-driven optimization recommendations
 
 ---
 
