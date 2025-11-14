@@ -1,11 +1,11 @@
-# NVIDIA GPU Operator & DCGM Metrics - SME Learning Guide
+# NVIDIA GPU Operator & DCGM Metrics - Workshop Guide
 
-> A comprehensive guide to becoming a Subject Matter Expert on NVIDIA GPU Operator with focus on DCGM metrics interpretation for profiling
+> A hands-on workshop guide for installing, configuring, and using NVIDIA GPU Operator with DCGM metrics for GPU profiling and monitoring
 
 ## 📖 Table of Contents
 
 1. [Overview](#overview)
-2. [Quick Start Guide](#quick-start-guide)
+2. [Workshop Quick Start](#workshop-quick-start)
 3. [NVIDIA GPU Operator Fundamentals](#nvidia-gpu-operator-fundamentals)
 4. [DCGM (Data Center GPU Manager) Deep Dive](#dcgm-data-center-gpu-manager-deep-dive)
 5. [DCGM Metrics for Profiling](#dcgm-metrics-for-profiling)
@@ -13,7 +13,8 @@
 7. [Setting Up Prometheus and Grafana for DCGM Metrics](#setting-up-prometheus-and-grafana-for-dcgm-metrics)
 8. [Practical Examples](#practical-examples)
 9. [Troubleshooting](#troubleshooting)
-10. [Resources & Next Steps](#resources--next-steps)
+10. [Workshop Cleanup](#workshop-cleanup)
+11. [Resources & Next Steps](#resources--next-steps)
 
 ---
 
@@ -41,11 +42,22 @@ The **NVIDIA GPU Operator** is a Kubernetes operator that manages GPU resources 
 
 ---
 
-## Quick Start Guide
+## Workshop Quick Start
 
-### Complete Stack Installation (15-20 minutes)
+### Workshop Overview
 
-For a fresh Ubuntu 22.04 server, you can install everything with a single script:
+This workshop will guide you through:
+1. **Installation** - Setting up Kubernetes, GPU Operator, and monitoring stack
+2. **Configuration** - Configuring Prometheus and Grafana for DCGM metrics
+3. **Profiling** - Learning to interpret DCGM metrics for GPU workload optimization
+4. **Cleanup** - Cleaning up resources after the workshop
+
+**Estimated Time:** 2-3 hours  
+**Prerequisites:** Ubuntu 22.04 server with GPU and sudo access
+
+### Step 1: Installation (15-20 minutes)
+
+For a fresh Ubuntu 22.04 server, install everything with a single script:
 
 ```bash
 # Clone the repository
@@ -53,7 +65,7 @@ git clone https://github.com/jpbueno/dynamo.git
 cd dynamo
 
 # Run the automated installation script
-bash gpu-operator-stack.sh install
+bash install-gpu-operator-stack.sh
 ```
 
 **What gets installed:**
@@ -68,11 +80,34 @@ bash gpu-operator-stack.sh install
 3. Configure Prometheus data source in Grafana (see [Prometheus/Grafana Setup](#setting-up-prometheus-and-grafana-for-dcgm-metrics))
 4. Start profiling GPU workloads!
 
-**Prerequisites:**
-- Ubuntu 22.04 server
-- GPU with NVIDIA driver support
-- Internet connectivity
-- Sudo access
+### Step 2: Follow the Workshop Exercises
+
+Continue with the sections below to learn about:
+- GPU Operator architecture and components
+- DCGM metrics and their interpretation
+- Setting up monitoring dashboards
+- Practical profiling examples
+
+### Step 3: Cleanup After Workshop
+
+When you're done with the workshop, clean up all resources:
+
+```bash
+# Run the cleanup script
+bash cleanup-gpu-operator-stack.sh
+```
+
+**What gets removed:**
+- Kubernetes cluster
+- GPU Operator
+- Prometheus/Grafana stack
+- Helm releases
+- System configurations (some)
+
+**Note:** Kubernetes tools (kubectl, kubeadm, kubelet) and Helm are kept for easy reinstallation. To fully remove them, run:
+```bash
+sudo apt-get purge -y kubelet kubeadm kubectl kubernetes-cni
+```
 
 For detailed manual installation or troubleshooting, see the sections below.
 
@@ -148,7 +183,8 @@ bash install-gpu-operator-stack.sh
 - Firewall rule configuration
 - Complete verification and status reporting
 
-**Additional commands:**
+**Related scripts:**
+- `bash cleanup-gpu-operator-stack.sh` - Clean up all components after workshop
 - `bash gpu-operator-stack.sh snapshot` - Create snapshot of current state
 - `bash gpu-operator-stack.sh restore <dir>` - Restore from snapshot
 - `bash gpu-operator-stack.sh status` - Show current stack status
@@ -1118,6 +1154,124 @@ dcgmi dmon -e 203,252 -d 1
 - Check for power throttling
 - Optimize kernel efficiency
 - Check for memory bandwidth bottlenecks
+
+---
+
+## Workshop Cleanup
+
+### Cleaning Up After the Workshop
+
+After completing the workshop exercises, you should clean up all installed components to free up resources and return the server to a clean state.
+
+### Automated Cleanup
+
+Use the provided cleanup script to remove all components:
+
+```bash
+# Run the cleanup script
+bash cleanup-gpu-operator-stack.sh
+```
+
+**What the cleanup script removes:**
+- ✅ Kubernetes cluster (kubeadm reset)
+- ✅ GPU Operator Helm release
+- ✅ Prometheus/Grafana Helm release
+- ✅ Flannel CNI plugin
+- ✅ All custom namespaces
+- ✅ Helm repositories
+- ✅ Helm cache
+- ✅ ServiceMonitor resources
+- ✅ Containerd configuration (reset to defaults)
+- ✅ Firewall rules (Kubernetes-specific)
+
+**What is kept (for easy reinstallation):**
+- Kubernetes tools (kubectl, kubeadm, kubelet)
+- Helm binary
+- System configurations (modules, sysctl) - partially kept
+
+### Manual Cleanup Steps
+
+If you prefer to clean up manually or the script doesn't cover everything:
+
+```bash
+# 1. Remove Helm releases
+helm uninstall kube-prometheus-stack -n monitoring
+helm uninstall gpu-operator -n gpu-operator
+
+# 2. Remove namespaces
+kubectl delete namespace monitoring
+kubectl delete namespace gpu-operator
+kubectl delete namespace kube-flannel
+
+# 3. Remove Flannel CNI
+kubectl delete -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+
+# 4. Reset Kubernetes cluster
+sudo kubeadm reset -f
+
+# 5. Remove Kubernetes config files
+rm -rf ~/.kube
+sudo rm -rf /etc/kubernetes
+sudo rm -rf /var/lib/etcd
+sudo rm -rf /var/lib/kubelet
+sudo rm -rf /etc/cni/net.d
+sudo rm -rf /opt/cni/bin
+
+# 6. Clean Helm
+helm repo remove nvidia
+helm repo remove prometheus-community
+rm -rf ~/.cache/helm
+
+# 7. Reset containerd (optional)
+sudo cp /etc/containerd/config.toml /etc/containerd/config.toml.backup
+containerd config default | sudo tee /etc/containerd/config.toml
+sudo systemctl restart containerd
+```
+
+### Complete Removal (Optional)
+
+To completely remove Kubernetes tools and start fresh:
+
+```bash
+# Remove Kubernetes packages
+sudo apt-mark unhold kubelet kubeadm kubectl
+sudo apt-get purge -y kubelet kubeadm kubectl kubernetes-cni
+
+# Remove Helm (optional)
+sudo rm -f /usr/local/bin/helm
+
+# Remove system configurations (optional)
+sudo rm -f /etc/modules-load.d/k8s.conf
+sudo rm -f /etc/sysctl.d/k8s.conf
+```
+
+### Verification
+
+After cleanup, verify everything is removed:
+
+```bash
+# Check no Kubernetes cluster exists
+kubectl cluster-info 2>&1 | grep -q "refused" && echo "Cluster removed" || echo "Cluster still exists"
+
+# Check no Helm releases
+helm list --all-namespaces
+
+# Check no GPU Operator pods
+kubectl get pods --all-namespaces | grep -i gpu || echo "No GPU Operator pods found"
+
+# Check disk space freed
+df -h /home
+```
+
+### Reinstallation
+
+To reinstall everything after cleanup, simply run:
+
+```bash
+bash install-gpu-operator-stack.sh
+```
+
+The installation script will detect that Kubernetes tools are already installed and skip those steps, making reinstallation faster.
 
 ---
 
