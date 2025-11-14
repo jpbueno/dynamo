@@ -9,9 +9,10 @@
 3. [DCGM (Data Center GPU Manager) Deep Dive](#dcgm-data-center-gpu-manager-deep-dive)
 4. [DCGM Metrics for Profiling](#dcgm-metrics-for-profiling)
 5. [Interpreting Metrics](#interpreting-metrics)
-6. [Practical Examples](#practical-examples)
-7. [Troubleshooting](#troubleshooting)
-8. [Resources & Next Steps](#resources--next-steps)
+6. [Setting Up Prometheus and Grafana for DCGM Metrics](#setting-up-prometheus-and-grafana-for-dcgm-metrics)
+7. [Practical Examples](#practical-examples)
+8. [Troubleshooting](#troubleshooting)
+9. [Resources & Next Steps](#resources--next-steps)
 
 ---
 
@@ -422,6 +423,290 @@ Understanding how metrics relate helps identify root causes:
 **High PCIe Usage + Low GPU Utilization**
 → Data loading bottleneck
 → Solution: Optimize data pipeline, use faster storage
+
+---
+
+## Setting Up Prometheus and Grafana for DCGM Metrics
+
+This section provides step-by-step instructions for setting up Prometheus and Grafana to collect and visualize DCGM metrics from the GPU Operator.
+
+### Prerequisites
+
+- GPU Operator installed and DCGM Exporter running
+- Helm 3.x installed
+- kubectl configured with cluster access
+- Sufficient cluster resources (2+ CPU cores, 4GB+ RAM recommended)
+
+### Step 1: Install Prometheus and Grafana Stack
+
+We'll use the `kube-prometheus-stack` Helm chart which includes Prometheus, Grafana, Alertmanager, and all necessary components.
+
+```bash
+# Add Prometheus Community Helm repository
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update prometheus-community
+
+# Create monitoring namespace
+kubectl create namespace monitoring
+
+# Install kube-prometheus-stack
+helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+  --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
+  --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
+  --wait --timeout 10m
+
+# Verify installation
+kubectl get pods -n monitoring
+```
+
+**Expected Output:**
+- `prometheus-kube-prometheus-stack-prometheus-0` - Prometheus server
+- `kube-prometheus-stack-grafana-*` - Grafana dashboard
+- `alertmanager-kube-prometheus-stack-alertmanager-0` - Alertmanager
+- Other supporting components
+
+### Step 2: Create ServiceMonitor for DCGM Exporter
+
+Create a ServiceMonitor resource to tell Prometheus to scrape DCGM Exporter metrics:
+
+```bash
+# Create ServiceMonitor YAML file (or use the provided file in the repo)
+cat > dcgm-servicemonitor.yaml <<EOF
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nvidia-dcgm-exporter
+  namespace: gpu-operator
+  labels:
+    app: nvidia-dcgm-exporter
+spec:
+  selector:
+    matchLabels:
+      app: nvidia-dcgm-exporter
+  endpoints:
+  - port: gpu-metrics
+    interval: 15s
+    path: /metrics
+EOF
+
+# Apply the ServiceMonitor
+kubectl apply -f dcgm-servicemonitor.yaml
+
+# Verify ServiceMonitor was created
+kubectl get servicemonitor -n gpu-operator
+```
+
+**Note:** The DCGM Exporter service already has the `prometheus.io/scrape: "true"` annotation, but using a ServiceMonitor provides more control and is the recommended approach with Prometheus Operator.
+
+### Step 3: Verify Prometheus is Scraping DCGM Metrics
+
+Wait a few minutes for Prometheus to discover and start scraping the DCGM Exporter, then verify:
+
+```bash
+# Port-forward Prometheus UI
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
+
+# In another terminal, check targets (should show nvidia-dcgm-exporter as "up")
+curl -s "http://localhost:9090/api/v1/targets" | jq '.data.activeTargets[] | select(.labels.job | contains("dcgm"))'
+
+# Query a DCGM metric
+curl -s "http://localhost:9090/api/v1/query?query=DCGM_FI_DEV_GPU_UTIL" | jq '.data.result'
+```
+
+**Expected Result:**
+- Target status: `"health": "up"`
+- Metrics should return with labels like `gpu`, `UUID`, `Hostname`, etc.
+
+### Step 4: Access Grafana Dashboard
+
+```bash
+# Get Grafana admin password
+kubectl get secret -n monitoring kube-prometheus-stack-grafana \
+  -o jsonpath="{.data.admin-password}" | base64 -d && echo
+
+# Port-forward Grafana (default port 3000)
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+```
+
+**Access Grafana:**
+- URL: `http://localhost:3000`
+- Username: `admin`
+- Password: (from command above)
+
+### Step 5: Configure Prometheus Data Source in Grafana
+
+1. Log into Grafana
+2. Go to **Configuration** → **Data Sources**
+3. Click **Add data source**
+4. Select **Prometheus**
+5. Set URL to: `http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090`
+6. Click **Save & Test** (should show "Data source is working")
+
+### Step 6: Create DCGM Metrics Dashboard
+
+Create a new dashboard or import a pre-built one:
+
+**Option A: Create Dashboard Manually**
+
+1. Go to **Dashboards** → **New Dashboard**
+2. Add panels with these PromQL queries:
+
+**Panel 1: GPU Utilization**
+```promql
+DCGM_FI_DEV_GPU_UTIL
+```
+- Visualization: Time series
+- Unit: Percent (0-100)
+- Legend: `{{gpu}} - {{modelName}}`
+
+**Panel 2: Memory Utilization**
+```promql
+(DCGM_FI_DEV_FB_USED / DCGM_FI_DEV_FB_TOTAL) * 100
+```
+- Visualization: Time series
+- Unit: Percent (0-100)
+
+**Panel 3: GPU Temperature**
+```promql
+DCGM_FI_DEV_GPU_TEMP
+```
+- Visualization: Time series
+- Unit: Celsius
+- Thresholds: Green < 70, Yellow 70-85, Red > 85
+
+**Panel 4: Power Usage**
+```promql
+DCGM_FI_DEV_POWER_USAGE
+```
+- Visualization: Time series
+- Unit: Watts
+
+**Panel 5: Memory Clock**
+```promql
+DCGM_FI_DEV_MEM_CLOCK
+```
+- Visualization: Time series
+- Unit: MHz
+
+**Panel 6: SM Clock**
+```promql
+DCGM_FI_DEV_SM_CLOCK
+```
+- Visualization: Time series
+- Unit: MHz
+
+**Panel 7: Tensor Core Utilization**
+```promql
+DCGM_FI_DEV_TENSOR_ACTIVE
+```
+- Visualization: Time series
+- Unit: Percent
+
+**Panel 8: PCIe RX Throughput**
+```promql
+DCGM_FI_DEV_PCIE_RX_THROUGHPUT
+```
+- Visualization: Time series
+- Unit: Bytes/sec (convert to GB/s)
+
+**Panel 9: PCIe TX Throughput**
+```promql
+DCGM_FI_DEV_PCIE_TX_THROUGHPUT
+```
+- Visualization: Time series
+- Unit: Bytes/sec (convert to GB/s)
+
+**Option B: Import Pre-built Dashboard**
+
+You can also create a JSON dashboard file and import it. See the "Grafana Dashboard JSON" section below for a complete example.
+
+### Step 7: Verify Metrics Collection
+
+Test that metrics are flowing correctly:
+
+```bash
+# Query GPU utilization via Prometheus API
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
+
+# In another terminal
+curl -s "http://localhost:9090/api/v1/query?query=DCGM_FI_DEV_GPU_UTIL" | \
+  jq '.data.result[] | {gpu: .metric.gpu, value: .value[1], model: .metric.modelName}'
+
+# Check all available DCGM metrics
+curl -s "http://localhost:9090/api/v1/label/__name__/values" | \
+  jq '.data[] | select(. | startswith("DCGM"))'
+```
+
+### Troubleshooting Prometheus/Grafana Setup
+
+#### Issue: Prometheus Not Scraping DCGM Exporter
+
+**Symptoms:**
+- No DCGM metrics in Prometheus
+- Target shows as "down" in Prometheus UI
+
+**Diagnosis:**
+```bash
+# Check ServiceMonitor exists
+kubectl get servicemonitor -n gpu-operator nvidia-dcgm-exporter
+
+# Check DCGM Exporter service
+kubectl get svc -n gpu-operator nvidia-dcgm-exporter
+
+# Check DCGM Exporter pods
+kubectl get pods -n gpu-operator -l app=nvidia-dcgm-exporter
+
+# Check Prometheus targets
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
+# Then visit http://localhost:9090/targets
+```
+
+**Solution:**
+- Verify ServiceMonitor namespace matches DCGM Exporter namespace
+- Ensure ServiceMonitor selector matches service labels
+- Check Prometheus logs: `kubectl logs -n monitoring prometheus-kube-prometheus-stack-prometheus-0`
+
+#### Issue: No Metrics in Grafana
+
+**Symptoms:**
+- Grafana loads but shows "No data"
+
+**Diagnosis:**
+```bash
+# Verify Prometheus data source is configured correctly
+# Check Grafana logs
+kubectl logs -n monitoring -l app.kubernetes.io/name=grafana
+
+# Test Prometheus query directly
+curl -s "http://localhost:9090/api/v1/query?query=DCGM_FI_DEV_GPU_UTIL"
+```
+
+**Solution:**
+- Verify Prometheus data source URL is correct
+- Ensure time range in Grafana includes data points
+- Check that metrics exist in Prometheus first
+
+### Quick Reference: Accessing Prometheus and Grafana
+
+```bash
+# Prometheus UI
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
+# Access at: http://localhost:9090
+
+# Grafana UI
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+# Access at: http://localhost:3000
+# Username: admin
+# Password: kubectl get secret -n monitoring kube-prometheus-stack-grafana -o jsonpath="{.data.admin-password}" | base64 -d
+
+# Check Prometheus targets
+curl -s "http://localhost:9090/api/v1/targets" | jq '.data.activeTargets[] | select(.labels.job | contains("dcgm"))'
+
+# Query DCGM metrics
+curl -s "http://localhost:9090/api/v1/query?query=DCGM_FI_DEV_GPU_UTIL" | jq '.data.result'
+```
 
 ---
 
