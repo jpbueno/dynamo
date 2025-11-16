@@ -333,6 +333,17 @@ install_cni() {
     log_info "Waiting for Flannel pods to be ready..."
     sleep 5
     
+    # Ensure API server is accessible before checking pods
+    if ! wait_for_api_server 15; then
+        log_warn "API server became unreachable, attempting recovery..."
+        sudo systemctl restart kubelet
+        sleep 10
+        if ! wait_for_api_server 20; then
+            log_error "API server did not recover. Flannel installation may be incomplete."
+            return 1
+        fi
+    fi
+    
     local max_wait=60
     local waited=0
     while [ $waited -lt $max_wait ]; do
@@ -345,7 +356,9 @@ install_cni() {
     
     kubectl wait --for=condition=ready pod -l app=flannel -n kube-flannel --timeout=300s || {
         log_warn "Flannel pods may not be ready yet, checking status..."
-        kubectl get pods -n kube-flannel
+        kubectl get pods -n kube-flannel 2>/dev/null || {
+            log_warn "Cannot check Flannel pods (API server may be unreachable)"
+        }
     }
     
     log_info "Waiting for node to become Ready (CNI initialization)..."
