@@ -34,6 +34,20 @@ log_section() {
     echo -e "${BLUE}========================================${NC}\n"
 }
 
+wait_for_api_server() {
+    # Helper function to wait for API server to be accessible
+    local max_attempts=30
+    local attempt=0
+    while [ $attempt -lt $max_attempts ]; do
+        if kubectl cluster-info &>/dev/null 2>&1; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 2
+    done
+    return 1
+}
+
 main() {
     log_section "Cleaning Up GPU Operator Stack"
     
@@ -47,65 +61,93 @@ main() {
     log_warn "This action cannot be undone. Press Ctrl+C to cancel..."
     sleep 5
     
-    # Remove Helm releases
+    # Remove Helm releases (only if API server is accessible)
     if command -v helm &>/dev/null; then
         log_info "Removing Helm releases..."
         
-        if helm list -n $MONITORING_NAMESPACE 2>/dev/null | grep -q kube-prometheus-stack; then
-            helm uninstall kube-prometheus-stack -n $MONITORING_NAMESPACE 2>/dev/null || true
+        if wait_for_api_server; then
+            if helm list -n $MONITORING_NAMESPACE 2>/dev/null | grep -q kube-prometheus-stack; then
+                log_info "  Uninstalling Prometheus/Grafana stack..."
+                helm uninstall kube-prometheus-stack -n $MONITORING_NAMESPACE 2>/dev/null || true
+            fi
+            
+            if helm list -n $GPU_OPERATOR_NAMESPACE 2>/dev/null | grep -q gpu-operator; then
+                log_info "  Uninstalling GPU Operator..."
+                helm uninstall gpu-operator -n $GPU_OPERATOR_NAMESPACE 2>/dev/null || true
+            fi
+            
+            # Remove namespaces
+            log_info "  Removing namespaces..."
+            kubectl delete namespace $MONITORING_NAMESPACE --ignore-not-found=true --timeout=60s 2>/dev/null || true
+            kubectl delete namespace $GPU_OPERATOR_NAMESPACE --ignore-not-found=true --timeout=60s 2>/dev/null || true
+        else
+            log_warn "API server not accessible, skipping Helm cleanup (will be cleaned by kubeadm reset)"
         fi
-        
-        if helm list -n $GPU_OPERATOR_NAMESPACE 2>/dev/null | grep -q gpu-operator; then
-            helm uninstall gpu-operator -n $GPU_OPERATOR_NAMESPACE 2>/dev/null || true
-        fi
-        
-        # Remove namespaces
-        kubectl delete namespace $MONITORING_NAMESPACE --ignore-not-found=true 2>/dev/null || true
-        kubectl delete namespace $GPU_OPERATOR_NAMESPACE --ignore-not-found=true 2>/dev/null || true
         
         # Clean Helm repos
         helm repo remove nvidia 2>/dev/null || true
         helm repo remove prometheus-community 2>/dev/null || true
     fi
     
-    # Remove CNI
-    if kubectl get pods -n kube-flannel &>/dev/null 2>&1; then
-        log_info "Removing Flannel CNI..."
-        kubectl delete -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml --ignore-not-found=true 2>/dev/null || true
-        kubectl delete namespace kube-flannel --ignore-not-found=true 2>/dev/null || true
+    # Remove CNI (only if API server is accessible)
+    if wait_for_api_server; then
+        if kubectl get pods -n kube-flannel &>/dev/null 2>&1; then
+            log_info "Removing Flannel CNI..."
+            kubectl delete -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml --ignore-not-found=true --timeout=60s 2>/dev/null || true
+            kubectl delete namespace kube-flannel --ignore-not-found=true --timeout=60s 2>/dev/null || true
+        fi
+    else
+        log_warn "API server not accessible, skipping CNI cleanup (will be cleaned by kubeadm reset)"
     fi
     
-        # Reset Kubernetes cluster
-        log_info "Resetting Kubernetes cluster..."
-        
-        # Try kubeadm reset if cluster exists
-        if kubectl cluster-info &>/dev/null 2>&1; then
-            sudo kubeadm reset -f 2>/dev/null || true
-        fi
-        
-        # Force cleanup even if kubeadm reset fails
-        log_info "Force cleaning Kubernetes directories..."
-        
-        # Stop kubelet to release ports
-        sudo systemctl stop kubelet 2>/dev/null || true
-        
-        # Remove kubectl config
-        rm -rf ~/.kube 2>/dev/null || true
-        
-        # Remove Kubernetes config files (force)
-        sudo rm -rf /etc/kubernetes 2>/dev/null || true
-        sudo rm -rf /var/lib/etcd 2>/dev/null || true
-        sudo rm -rf /var/lib/kubelet 2>/dev/null || true
-        
-        # Remove CNI config
-        sudo rm -rf /etc/cni/net.d 2>/dev/null || true
-        sudo rm -rf /opt/cni/bin 2>/dev/null || true
-        
-        # Clean up any remaining containerd/kubelet containers
-        sudo crictl rm -a -f 2>/dev/null || true
-        
-        # Restart kubelet
-        sudo systemctl start kubelet 2>/dev/null || true
+    # Reset Kubernetes cluster
+    log_info "Resetting Kubernetes cluster..."
+    
+    # Try kubeadm reset if cluster exists
+    if wait_for_api_server; then
+        log_info "  Running kubeadm reset..."
+        sudo kubeadm reset -f 2>/dev/null || {
+            log_warn "kubeadm reset had issues, continuing with force cleanup..."
+        }
+    else
+        log_info "  API server not accessible, proceeding with force cleanup..."
+    fi
+    
+    # Force cleanup even if kubeadm reset fails
+    log_info "Force cleaning Kubernetes directories..."
+    
+    # Stop kubelet to release ports and prevent new pods
+    log_info "  Stopping kubelet..."
+    sudo systemctl stop kubelet 2>/dev/null || true
+    sleep 2
+    
+    # Remove kubectl config
+    log_info "  Removing kubectl config..."
+    rm -rf ~/.kube 2>/dev/null || true
+    
+    # Remove Kubernetes config files (force)
+    log_info "  Removing Kubernetes directories..."
+    sudo rm -rf /etc/kubernetes 2>/dev/null || true
+    sudo rm -rf /var/lib/etcd 2>/dev/null || true
+    sudo rm -rf /var/lib/kubelet 2>/dev/null || true
+    
+    # Remove CNI config
+    log_info "  Removing CNI configuration..."
+    sudo rm -rf /etc/cni/net.d 2>/dev/null || true
+    sudo rm -rf /opt/cni/bin 2>/dev/null || true
+    
+    # Clean up any remaining containerd/kubelet containers
+    log_info "  Cleaning containerd containers..."
+    sudo crictl rm -a -f 2>/dev/null || true
+    
+    # Clean up containerd images (optional, but helps with space)
+    log_info "  Pruning containerd..."
+    sudo crictl rmi --prune 2>/dev/null || true
+    
+    # Restart kubelet
+    log_info "  Restarting kubelet..."
+    sudo systemctl start kubelet 2>/dev/null || true
+    sleep 2
     
     # Clean Helm cache
     log_info "Cleaning Helm cache..."
@@ -126,18 +168,21 @@ main() {
         sudo systemctl restart containerd 2>/dev/null || true
     fi
     
-    # Remove ServiceMonitor
-    kubectl delete servicemonitor -n $GPU_OPERATOR_NAMESPACE nvidia-dcgm-exporter --ignore-not-found=true 2>/dev/null || true
+    # Remove ServiceMonitor (only if API server is accessible)
+    if wait_for_api_server; then
+        log_info "Removing ServiceMonitor..."
+        kubectl delete servicemonitor -n $GPU_OPERATOR_NAMESPACE nvidia-dcgm-exporter --ignore-not-found=true --timeout=30s 2>/dev/null || true
+    fi
     
-    # Clean up any remaining pods/resources
-    if kubectl cluster-info &>/dev/null 2>&1; then
+    # Clean up any remaining pods/resources (only if API server is accessible)
+    if wait_for_api_server; then
         log_info "Cleaning up remaining resources..."
-        kubectl delete --all pods --all-namespaces --grace-period=0 --force 2>/dev/null || true
+        kubectl delete --all pods --all-namespaces --grace-period=0 --force --timeout=30s 2>/dev/null || true
         
         # Remove any remaining namespaces (except system ones)
         for ns in $(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
             if [[ "$ns" != "default" && "$ns" != "kube-system" && "$ns" != "kube-public" && "$ns" != "kube-node-lease" ]]; then
-                kubectl delete namespace "$ns" --ignore-not-found=true 2>/dev/null || true
+                kubectl delete namespace "$ns" --ignore-not-found=true --timeout=30s 2>/dev/null || true
             fi
         done
     fi

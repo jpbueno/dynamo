@@ -30,6 +30,58 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+wait_for_api_server() {
+    # Wait for API server to be accessible and stable
+    local max_attempts=${1:-30}
+    local attempt=0
+    local consecutive_success=0
+    
+    log_info "Waiting for API server to be accessible..."
+    while [ $attempt -lt $max_attempts ]; do
+        if kubectl cluster-info &>/dev/null 2>&1; then
+            consecutive_success=$((consecutive_success + 1))
+            if [ $consecutive_success -ge 3 ]; then
+                log_info "✓ API server is stable"
+                return 0
+            fi
+        else
+            consecutive_success=0
+        fi
+        attempt=$((attempt + 1))
+        sleep 2
+    done
+    
+    log_error "API server did not become accessible after $((max_attempts * 2)) seconds"
+    return 1
+}
+
+wait_for_pods_ready() {
+    # Wait for pods to be ready in a namespace
+    local namespace=$1
+    local selector=$2
+    local timeout=${3:-600}  # Default 10 minutes
+    local check_interval=${4:-10}  # Default 10 seconds
+    local max_attempts=$((timeout / check_interval))
+    local attempt=0
+    
+    while [ $attempt -lt $max_attempts ]; do
+        READY=$(kubectl get pods -n "$namespace" $selector --no-headers 2>/dev/null | grep -v "Completed" | awk '{print $2}' | grep -E "^[0-9]+/[0-9]+$" | wc -l)
+        TOTAL=$(kubectl get pods -n "$namespace" $selector --no-headers 2>/dev/null | grep -v "Completed" | wc -l)
+        
+        if [ "$TOTAL" -gt 0 ] && [ "$READY" -eq "$TOTAL" ]; then
+            return 0
+        fi
+        
+        attempt=$((attempt + 1))
+        if [ $((attempt % 6)) -eq 0 ]; then
+            echo -n "."
+        fi
+        sleep $check_interval
+    done
+    
+    return 1
+}
+
 log_section() {
     echo -e "\n${BLUE}========================================${NC}"
     echo -e "${BLUE}$1${NC}"
@@ -227,19 +279,12 @@ initialize_cluster() {
     configure_kubectl_shell
     
     # Wait for API server to be fully ready (sometimes it takes a moment after init)
-    log_info "Waiting for API server to be fully ready..."
-    for i in {1..30}; do
-        if kubectl cluster-info &>/dev/null 2>&1; then
-            log_info "✓ API server is ready"
-            break
-        fi
-        if [ $i -eq 30 ]; then
-            log_error "API server did not become ready after 2.5 minutes"
-            log_error "This may indicate a problem. Check with: sudo crictl ps | grep kube-apiserver"
-            return 1
-        fi
-        sleep 5
-    done
+    if ! wait_for_api_server 30; then
+        log_error "API server did not become ready after initialization"
+        log_error "Check API server status: sudo crictl ps | grep kube-apiserver"
+        log_error "Check kubelet logs: sudo journalctl -u kubelet --no-pager -n 50"
+        return 1
+    fi
     
     log_info "Kubernetes cluster initialized successfully"
 }
@@ -360,20 +405,12 @@ install_gpu_operator() {
     }
     
     log_info "Waiting for GPU Operator pods to be ready (this may take several minutes)..."
-    # Wait for GPU Operator pods with better error handling
-    for i in {1..60}; do
-        READY=$(kubectl get pods -n $GPU_OPERATOR_NAMESPACE -l app=gpu-operator --no-headers 2>/dev/null | awk '{print $2}' | grep -E "^[0-9]+/[0-9]+$" | wc -l)
-        TOTAL=$(kubectl get pods -n $GPU_OPERATOR_NAMESPACE -l app=gpu-operator --no-headers 2>/dev/null | wc -l)
-        if [ "$TOTAL" -gt 0 ] && [ "$READY" -eq "$TOTAL" ]; then
-            log_info "✓ GPU Operator is ready"
-            break
-        fi
-        if [ $i -eq 60 ]; then
-            log_warn "GPU Operator not fully ready after 10 minutes, but continuing..."
-            kubectl get pods -n $GPU_OPERATOR_NAMESPACE | head -10
-        fi
-        sleep 10
-    done
+    if wait_for_pods_ready "$GPU_OPERATOR_NAMESPACE" "-l app=gpu-operator" 600 10; then
+        log_info "✓ GPU Operator is ready"
+    else
+        log_warn "GPU Operator not fully ready after 10 minutes, but continuing..."
+        kubectl get pods -n $GPU_OPERATOR_NAMESPACE | head -10
+    fi
     
     log_info "Checking GPU Operator status..."
     kubectl get pods -n $GPU_OPERATOR_NAMESPACE
@@ -409,20 +446,23 @@ install_prometheus_grafana() {
     
     log_info "Waiting for Prometheus/Grafana pods to be ready (this may take several minutes)..."
     sleep 10
-    # Wait for key pods with better error handling
-    for i in {1..60}; do
-        PROM_READY=$(kubectl get pods -n $MONITORING_NAMESPACE -l app.kubernetes.io/name=prometheus --no-headers 2>/dev/null | awk '{print $2}' | grep -E "^[0-9]+/[0-9]+$" | wc -l)
-        GRAFANA_READY=$(kubectl get pods -n $MONITORING_NAMESPACE -l app.kubernetes.io/name=grafana --no-headers 2>/dev/null | awk '{print $2}' | grep -E "^[0-9]+/[0-9]+$" | wc -l)
-        if [ "$PROM_READY" -gt 0 ] && [ "$GRAFANA_READY" -gt 0 ]; then
-            log_info "✓ Prometheus and Grafana are ready"
-            break
-        fi
-        if [ $i -eq 60 ]; then
-            log_warn "Prometheus/Grafana not fully ready after 10 minutes, but continuing..."
-            kubectl get pods -n $MONITORING_NAMESPACE | head -10
-        fi
-        sleep 10
-    done
+    
+    # Wait for Prometheus
+    log_info "  Waiting for Prometheus..."
+    if wait_for_pods_ready "$MONITORING_NAMESPACE" "-l app.kubernetes.io/name=prometheus" 600 10; then
+        log_info "  ✓ Prometheus is ready"
+    else
+        log_warn "  Prometheus not fully ready after 10 minutes"
+    fi
+    
+    # Wait for Grafana
+    log_info "  Waiting for Grafana..."
+    if wait_for_pods_ready "$MONITORING_NAMESPACE" "-l app.kubernetes.io/name=grafana" 600 10; then
+        log_info "  ✓ Grafana is ready"
+    else
+        log_warn "  Grafana not fully ready after 10 minutes"
+    fi
+    
     kubectl get pods -n $MONITORING_NAMESPACE | head -10
     
     log_info "✓ Prometheus and Grafana installed successfully"
@@ -432,10 +472,26 @@ configure_dcgm_service_monitor() {
     log_info "Configuring DCGM Exporter ServiceMonitor..."
     
     log_info "Waiting for DCGM Exporter pod to be ready..."
-    kubectl wait --for=condition=ready pod -l app=nvidia-dcgm-exporter -n $GPU_OPERATOR_NAMESPACE --timeout=300s || {
-        log_warn "DCGM Exporter pod not ready yet, but continuing..."
-        kubectl get pods -n $GPU_OPERATOR_NAMESPACE -l app=nvidia-dcgm-exporter
-    }
+    # DCGM Exporter may take time to appear
+    local dcgm_attempts=0
+    while [ $dcgm_attempts -lt 30 ]; do
+        if kubectl get pods -n $GPU_OPERATOR_NAMESPACE -l app=nvidia-dcgm-exporter --no-headers 2>/dev/null | grep -q .; then
+            break
+        fi
+        dcgm_attempts=$((dcgm_attempts + 1))
+        sleep 2
+    done
+    
+    if kubectl get pods -n $GPU_OPERATOR_NAMESPACE -l app=nvidia-dcgm-exporter --no-headers 2>/dev/null | grep -q .; then
+        if wait_for_pods_ready "$GPU_OPERATOR_NAMESPACE" "-l app=nvidia-dcgm-exporter" 300 5; then
+            log_info "✓ DCGM Exporter is ready"
+        else
+            log_warn "DCGM Exporter pod not ready yet, but continuing..."
+            kubectl get pods -n $GPU_OPERATOR_NAMESPACE -l app=nvidia-dcgm-exporter
+        fi
+    else
+        log_warn "DCGM Exporter pod not found yet, but continuing..."
+    fi
     
     log_info "Creating ServiceMonitor for DCGM metrics..."
     cat <<EOF | kubectl apply -f -
@@ -556,29 +612,29 @@ main() {
     configure_cluster
     
     show_progress "Waiting for CoreDNS"
-    log_info "Waiting for API server to stabilize..."
-    # Wait for API server to be stable (sometimes it restarts after init)
-    for i in {1..30}; do
-        if kubectl cluster-info &>/dev/null 2>&1; then
-            # API server is responding, check if it stays stable
-            sleep 5
-            if kubectl cluster-info &>/dev/null 2>&1; then
-                log_info "✓ API server is stable"
-                break
-            fi
-        fi
-        if [ $i -eq 30 ]; then
-            log_error "API server did not stabilize after 2.5 minutes"
-            log_error "Check API server status: sudo crictl ps | grep kube-apiserver"
-            return 1
-        fi
-        sleep 5
-    done
+    if ! wait_for_api_server 30; then
+        log_error "API server is not stable. Cannot proceed."
+        return 1
+    fi
     
     log_info "Waiting for CoreDNS to be ready..."
-    kubectl wait --for=condition=ready pod -l k8s-app=kube-dns -n kube-system --timeout=300s || {
-        log_warn "CoreDNS pods not ready yet, but continuing..."
-    }
+    # CoreDNS may not exist immediately after cluster init
+    local coredns_attempts=0
+    while [ $coredns_attempts -lt 30 ]; do
+        if kubectl get pods -n kube-system -l k8s-app=kube-dns --no-headers 2>/dev/null | grep -q .; then
+            break
+        fi
+        coredns_attempts=$((coredns_attempts + 1))
+        sleep 2
+    done
+    
+    if kubectl get pods -n kube-system -l k8s-app=kube-dns --no-headers 2>/dev/null | grep -q .; then
+        kubectl wait --for=condition=ready pod -l k8s-app=kube-dns -n kube-system --timeout=300s || {
+            log_warn "CoreDNS pods not ready yet, but continuing..."
+        }
+    else
+        log_warn "CoreDNS pods not found yet, but continuing..."
+    fi
     log_info "CoreDNS check complete"
     
     show_progress "Installing Flannel CNI"
@@ -586,17 +642,21 @@ main() {
     
     # Wait for node to become Ready
     log_info "Waiting for node to become Ready..."
-    for i in {1..60}; do
+    local node_ready_attempts=0
+    while [ $node_ready_attempts -lt 60 ]; do
         if kubectl get nodes -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q "True"; then
             log_info "✓ Node is Ready - CNI is working"
-            break
+            return 0
         fi
-        if [ $i -eq 60 ]; then
-            log_warn "Node did not become Ready after 5 minutes"
-            log_info "This may affect subsequent installations, but continuing..."
+        node_ready_attempts=$((node_ready_attempts + 1))
+        if [ $((node_ready_attempts % 12)) -eq 0 ]; then
+            echo -n "."
         fi
         sleep 5
     done
+    echo ""
+    log_warn "Node did not become Ready after 5 minutes"
+    log_info "This may affect subsequent installations, but continuing..."
     
     show_progress "Installing Helm"
     install_helm
