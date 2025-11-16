@@ -179,30 +179,42 @@ initialize_cluster() {
         fi
     fi
     
-    if sudo netstat -tlnp 2>/dev/null | grep -q ":6443.*LISTEN"; then
-        log_warn "Port 6443 is in use. Cluster may be partially initialized."
-        log_info "Setting up kubeconfig from existing config..."
+    # Check for partial initialization
+    if [ -f /etc/kubernetes/manifests/kube-apiserver.yaml ]; then
+        log_warn "Kubernetes manifests exist. Checking if cluster is accessible..."
         mkdir -p $HOME/.kube
         if [ -f /etc/kubernetes/super-admin.conf ]; then
-            sudo cp -i /etc/kubernetes/super-admin.conf $HOME/.kube/config
+            sudo cp -i /etc/kubernetes/super-admin.conf $HOME/.kube/config 2>/dev/null || true
         elif [ -f /etc/kubernetes/admin.conf ]; then
-            sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+            sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config 2>/dev/null || true
         fi
-        sudo chown $(id -u):$(id -g) $HOME/.kube/config
-        configure_kubectl_shell
+        sudo chown $(id -u):$(id -g) $HOME/.kube/config 2>/dev/null || true
         
+        # Wait for API server to be ready (up to 2 minutes)
+        log_info "Waiting for API server to be ready..."
+        for i in {1..24}; do
+            if kubectl cluster-info &>/dev/null 2>&1; then
+                log_info "Cluster is accessible. Continuing with configuration..."
+                configure_kubectl_shell
+                return 0
+            fi
+            sleep 5
+        done
+        
+        log_error "Cluster files exist but cluster is not responding after 2 minutes."
+        log_error "This may indicate a problem with the API server."
+        log_info "Attempting to reset and reinitialize..."
+        sudo kubeadm reset -f 2>/dev/null || true
+        sudo rm -rf /etc/kubernetes /var/lib/etcd /var/lib/kubelet 2>/dev/null || true
+        sudo systemctl restart kubelet
         sleep 5
-        if kubectl cluster-info &>/dev/null 2>&1; then
-            log_info "Cluster is accessible. Continuing with configuration..."
-            return 0
-        else
-            log_error "Cluster files exist but cluster is not responding."
-            log_error "You may need to run: sudo kubeadm reset -f"
-            exit 1
-        fi
     fi
     
-    sudo kubeadm init --pod-network-cidr=$POD_NETWORK_CIDR
+    log_info "Initializing Kubernetes cluster with kubeadm..."
+    sudo kubeadm init --pod-network-cidr=$POD_NETWORK_CIDR || {
+        log_error "kubeadm init failed"
+        return 1
+    }
     
     mkdir -p $HOME/.kube
     if [ -f /etc/kubernetes/super-admin.conf ]; then
@@ -214,7 +226,22 @@ initialize_cluster() {
     
     configure_kubectl_shell
     
-    log_info "Kubernetes cluster initialized"
+    # Wait for API server to be fully ready (sometimes it takes a moment after init)
+    log_info "Waiting for API server to be fully ready..."
+    for i in {1..30}; do
+        if kubectl cluster-info &>/dev/null 2>&1; then
+            log_info "✓ API server is ready"
+            break
+        fi
+        if [ $i -eq 30 ]; then
+            log_error "API server did not become ready after 2.5 minutes"
+            log_error "This may indicate a problem. Check with: sudo crictl ps | grep kube-apiserver"
+            return 1
+        fi
+        sleep 5
+    done
+    
+    log_info "Kubernetes cluster initialized successfully"
 }
 
 configure_cluster() {
@@ -322,14 +349,31 @@ install_gpu_operator() {
     fi
     
     log_info "Installing GPU Operator (this may take 5-10 minutes)..."
-    helm install --wait gpu-operator \
+    # Install without --wait to avoid timeout, we'll check manually
+    helm install gpu-operator \
         nvidia/gpu-operator \
         --namespace $GPU_OPERATOR_NAMESPACE \
         --set operator.defaultRuntime=containerd \
-        --timeout 10m
+        --timeout 10m || {
+        log_error "GPU Operator Helm installation failed"
+        return 1
+    }
     
-    log_info "Waiting for GPU Operator pods to be ready..."
-    kubectl wait --for=condition=ready pod -l app=gpu-operator -n $GPU_OPERATOR_NAMESPACE --timeout=600s || true
+    log_info "Waiting for GPU Operator pods to be ready (this may take several minutes)..."
+    # Wait for GPU Operator pods with better error handling
+    for i in {1..60}; do
+        READY=$(kubectl get pods -n $GPU_OPERATOR_NAMESPACE -l app=gpu-operator --no-headers 2>/dev/null | awk '{print $2}' | grep -E "^[0-9]+/[0-9]+$" | wc -l)
+        TOTAL=$(kubectl get pods -n $GPU_OPERATOR_NAMESPACE -l app=gpu-operator --no-headers 2>/dev/null | wc -l)
+        if [ "$TOTAL" -gt 0 ] && [ "$READY" -eq "$TOTAL" ]; then
+            log_info "✓ GPU Operator is ready"
+            break
+        fi
+        if [ $i -eq 60 ]; then
+            log_warn "GPU Operator not fully ready after 10 minutes, but continuing..."
+            kubectl get pods -n $GPU_OPERATOR_NAMESPACE | head -10
+        fi
+        sleep 10
+    done
     
     log_info "Checking GPU Operator status..."
     kubectl get pods -n $GPU_OPERATOR_NAMESPACE
@@ -352,16 +396,34 @@ install_prometheus_grafana() {
     fi
     
     log_info "Installing Prometheus/Grafana stack (this may take 5-10 minutes)..."
+    # Install without --wait to avoid timeout, we'll check manually
     helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
         --namespace $MONITORING_NAMESPACE \
         --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
         --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
         --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
-        --wait --timeout 10m
+        --timeout 10m || {
+        log_error "Prometheus/Grafana Helm installation failed"
+        return 1
+    }
     
-    log_info "Waiting for Prometheus/Grafana pods to be ready..."
+    log_info "Waiting for Prometheus/Grafana pods to be ready (this may take several minutes)..."
     sleep 10
-    kubectl get pods -n $MONITORING_NAMESPACE
+    # Wait for key pods with better error handling
+    for i in {1..60}; do
+        PROM_READY=$(kubectl get pods -n $MONITORING_NAMESPACE -l app.kubernetes.io/name=prometheus --no-headers 2>/dev/null | awk '{print $2}' | grep -E "^[0-9]+/[0-9]+$" | wc -l)
+        GRAFANA_READY=$(kubectl get pods -n $MONITORING_NAMESPACE -l app.kubernetes.io/name=grafana --no-headers 2>/dev/null | awk '{print $2}' | grep -E "^[0-9]+/[0-9]+$" | wc -l)
+        if [ "$PROM_READY" -gt 0 ] && [ "$GRAFANA_READY" -gt 0 ]; then
+            log_info "✓ Prometheus and Grafana are ready"
+            break
+        fi
+        if [ $i -eq 60 ]; then
+            log_warn "Prometheus/Grafana not fully ready after 10 minutes, but continuing..."
+            kubectl get pods -n $MONITORING_NAMESPACE | head -10
+        fi
+        sleep 10
+    done
+    kubectl get pods -n $MONITORING_NAMESPACE | head -10
     
     log_info "✓ Prometheus and Grafana installed successfully"
 }
@@ -494,19 +556,47 @@ main() {
     configure_cluster
     
     show_progress "Waiting for CoreDNS"
+    log_info "Waiting for API server to stabilize..."
+    # Wait for API server to be stable (sometimes it restarts after init)
+    for i in {1..30}; do
+        if kubectl cluster-info &>/dev/null 2>&1; then
+            # API server is responding, check if it stays stable
+            sleep 5
+            if kubectl cluster-info &>/dev/null 2>&1; then
+                log_info "✓ API server is stable"
+                break
+            fi
+        fi
+        if [ $i -eq 30 ]; then
+            log_error "API server did not stabilize after 2.5 minutes"
+            log_error "Check API server status: sudo crictl ps | grep kube-apiserver"
+            return 1
+        fi
+        sleep 5
+    done
+    
     log_info "Waiting for CoreDNS to be ready..."
-    kubectl wait --for=condition=ready pod -l k8s-app=kube-dns -n kube-system --timeout=300s || true
-    log_info "CoreDNS is ready"
+    kubectl wait --for=condition=ready pod -l k8s-app=kube-dns -n kube-system --timeout=300s || {
+        log_warn "CoreDNS pods not ready yet, but continuing..."
+    }
+    log_info "CoreDNS check complete"
     
     show_progress "Installing Flannel CNI"
     install_cni
     
-    if ! kubectl get nodes -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q "True"; then
-        log_warn "Node is not Ready yet. This may affect subsequent installations."
-        log_info "You can check node status with: kubectl get nodes"
-    else
-        log_info "✓ Node is Ready - CNI is working"
-    fi
+    # Wait for node to become Ready
+    log_info "Waiting for node to become Ready..."
+    for i in {1..60}; do
+        if kubectl get nodes -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q "True"; then
+            log_info "✓ Node is Ready - CNI is working"
+            break
+        fi
+        if [ $i -eq 60 ]; then
+            log_warn "Node did not become Ready after 5 minutes"
+            log_info "This may affect subsequent installations, but continuing..."
+        fi
+        sleep 5
+    done
     
     show_progress "Installing Helm"
     install_helm

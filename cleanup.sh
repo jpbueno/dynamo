@@ -75,15 +75,24 @@ main() {
         kubectl delete namespace kube-flannel --ignore-not-found=true 2>/dev/null || true
     fi
     
-    # Reset Kubernetes cluster
-    if kubectl cluster-info &>/dev/null 2>&1; then
+        # Reset Kubernetes cluster
         log_info "Resetting Kubernetes cluster..."
-        sudo kubeadm reset -f 2>/dev/null || true
+        
+        # Try kubeadm reset if cluster exists
+        if kubectl cluster-info &>/dev/null 2>&1; then
+            sudo kubeadm reset -f 2>/dev/null || true
+        fi
+        
+        # Force cleanup even if kubeadm reset fails
+        log_info "Force cleaning Kubernetes directories..."
+        
+        # Stop kubelet to release ports
+        sudo systemctl stop kubelet 2>/dev/null || true
         
         # Remove kubectl config
         rm -rf ~/.kube 2>/dev/null || true
         
-        # Remove Kubernetes config files
+        # Remove Kubernetes config files (force)
         sudo rm -rf /etc/kubernetes 2>/dev/null || true
         sudo rm -rf /var/lib/etcd 2>/dev/null || true
         sudo rm -rf /var/lib/kubelet 2>/dev/null || true
@@ -91,7 +100,12 @@ main() {
         # Remove CNI config
         sudo rm -rf /etc/cni/net.d 2>/dev/null || true
         sudo rm -rf /opt/cni/bin 2>/dev/null || true
-    fi
+        
+        # Clean up any remaining containerd/kubelet containers
+        sudo crictl rm -a -f 2>/dev/null || true
+        
+        # Restart kubelet
+        sudo systemctl start kubelet 2>/dev/null || true
     
     # Clean Helm cache
     log_info "Cleaning Helm cache..."
