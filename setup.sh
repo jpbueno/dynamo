@@ -193,8 +193,8 @@ configure_kubectl_shell() {
 # kubectl alias and completion
 if command -v kubectl &> /dev/null; then
     alias k=kubectl
-    source <(kubectl completion bash)
-    complete -F __start_kubectl k
+    source <(kubectl completion bash 2>/dev/null) || true
+    complete -F __start_kubectl k 2>/dev/null || true
 fi
 EOF
         log_info "Added kubectl alias and completion to ~/.bashrc"
@@ -202,10 +202,17 @@ EOF
         log_info "kubectl alias and completion already configured"
     fi
     
+    # Load alias in current shell session immediately
     if command -v kubectl &> /dev/null; then
         alias k=kubectl 2>/dev/null || true
-        source <(kubectl completion bash) 2>/dev/null || true
-        complete -F __start_kubectl k 2>/dev/null || true
+        if [ -n "$BASH_VERSION" ]; then
+            # Load completion in current shell
+            source <(kubectl completion bash 2>/dev/null) || true
+            complete -F __start_kubectl k 2>/dev/null || true
+        fi
+        log_info "✓ Alias 'k' loaded in current shell - you can use 'k' command now"
+    else
+        log_warn "kubectl not found, alias not loaded"
     fi
     
     log_info "Shell integration configured. Run 'source ~/.bashrc' or start a new shell to use 'k' alias"
