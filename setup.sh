@@ -30,28 +30,138 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+diagnose_api_server() {
+    # Comprehensive API server diagnostics
+    log_info "Diagnosing API server issues..."
+    
+    echo ""
+    log_info "=== API Server Diagnostics ==="
+    
+    # Check kubelet status
+    log_info "1. Checking kubelet service..."
+    if sudo systemctl is-active kubelet &>/dev/null; then
+        log_info "   ✓ kubelet is running"
+    else
+        log_error "   ✗ kubelet is not running"
+        log_info "   Attempting to start kubelet..."
+        sudo systemctl start kubelet
+        sleep 5
+    fi
+    
+    # Check API server container
+    log_info "2. Checking API server container..."
+    API_CONTAINER=$(sudo crictl ps -a 2>/dev/null | grep kube-apiserver | grep -v "Exited" | awk '{print $1}' | head -1)
+    if [ -n "$API_CONTAINER" ]; then
+        log_info "   ✓ API server container found: $API_CONTAINER"
+        log_info "   Checking container logs..."
+        sudo crictl logs --tail 20 "$API_CONTAINER" 2>/dev/null | tail -5 || true
+    else
+        log_warn "   ⚠ API server container not found or exited"
+        log_info "   Checking exited containers..."
+        EXITED=$(sudo crictl ps -a 2>/dev/null | grep kube-apiserver | grep Exited | head -1)
+        if [ -n "$EXITED" ]; then
+            log_warn "   Found exited API server container, checking logs..."
+            EXITED_ID=$(echo "$EXITED" | awk '{print $1}')
+            sudo crictl logs --tail 30 "$EXITED_ID" 2>/dev/null | tail -10 || true
+        fi
+    fi
+    
+    # Check etcd
+    log_info "3. Checking etcd container..."
+    ETCD_CONTAINER=$(sudo crictl ps 2>/dev/null | grep etcd | awk '{print $1}' | head -1)
+    if [ -n "$ETCD_CONTAINER" ]; then
+        log_info "   ✓ etcd is running"
+    else
+        log_warn "   ⚠ etcd container not found"
+    fi
+    
+    # Check port 6443
+    log_info "4. Checking port 6443..."
+    if sudo ss -tlnp 2>/dev/null | grep -q ":6443"; then
+        log_info "   ✓ Port 6443 is listening"
+    else
+        log_warn "   ⚠ Port 6443 is not listening"
+    fi
+    
+    # Check kubelet logs
+    log_info "5. Recent kubelet errors..."
+    sudo journalctl -u kubelet --no-pager -n 10 2>/dev/null | grep -i error | tail -3 || log_info "   No recent errors"
+    
+    echo ""
+}
+
 wait_for_api_server() {
-    # Wait for API server to be accessible and stable
-    local max_attempts=${1:-30}
+    # Wait for API server to be accessible and stable with comprehensive checks
+    local max_attempts=${1:-60}  # Increased default timeout
     local attempt=0
     local consecutive_success=0
+    local recovery_attempts=0
+    local max_recovery_attempts=3
     
-    log_info "Waiting for API server to be accessible..."
+    log_info "Waiting for API server to be accessible and stable..."
+    
     while [ $attempt -lt $max_attempts ]; do
+        # Test API server accessibility
         if kubectl cluster-info &>/dev/null 2>&1; then
             consecutive_success=$((consecutive_success + 1))
-            if [ $consecutive_success -ge 3 ]; then
-                log_info "✓ API server is stable"
-                return 0
+            
+            # Require 5 consecutive successful checks for stability
+            if [ $consecutive_success -ge 5 ]; then
+                # Final comprehensive check
+                if kubectl get nodes &>/dev/null 2>&1 && \
+                   kubectl get namespaces &>/dev/null 2>&1 && \
+                   kubectl cluster-info &>/dev/null 2>&1; then
+                    log_info "✓ API server is fully operational and stable"
+                    log_info "  - Cluster info accessible"
+                    log_info "  - Nodes API working"
+                    log_info "  - Namespaces API working"
+                    return 0
+                fi
+            fi
+            
+            if [ $((attempt % 10)) -eq 0 ] && [ $attempt -gt 0 ]; then
+                echo -n "."
             fi
         else
             consecutive_success=0
+            
+            # If we've had failures and haven't tried recovery yet
+            if [ $attempt -gt 10 ] && [ $recovery_attempts -lt $max_recovery_attempts ]; then
+                recovery_attempts=$((recovery_attempts + 1))
+                log_warn "API server became unreachable, attempting recovery #$recovery_attempts..."
+                diagnose_api_server
+                
+                log_info "Restarting kubelet..."
+                sudo systemctl restart kubelet
+                sleep 10
+                
+                # Check if recovery worked
+                if kubectl cluster-info &>/dev/null 2>&1; then
+                    log_info "✓ Recovery successful, API server is responding"
+                    consecutive_success=1
+                else
+                    log_warn "Recovery attempt $recovery_attempts did not immediately restore API server"
+                fi
+            fi
         fi
+        
         attempt=$((attempt + 1))
         sleep 2
     done
     
-    log_error "API server did not become accessible after $((max_attempts * 2)) seconds"
+    # Final diagnosis before giving up
+    log_error "API server did not become stable after $((max_attempts * 2)) seconds"
+    log_error "Performing final diagnostics..."
+    diagnose_api_server
+    
+    log_error ""
+    log_error "API server troubleshooting steps:"
+    log_error "1. Check kubelet: sudo systemctl status kubelet"
+    log_error "2. Check API server logs: sudo crictl ps -a | grep kube-apiserver"
+    log_error "3. Check etcd: sudo crictl ps | grep etcd"
+    log_error "4. Restart kubelet: sudo systemctl restart kubelet"
+    log_error "5. Check system resources: free -h && df -h"
+    
     return 1
 }
 
@@ -285,15 +395,34 @@ initialize_cluster() {
     
     configure_kubectl_shell
     
-    # Wait for API server to be fully ready (sometimes it takes a moment after init)
-    if ! wait_for_api_server 30; then
-        log_error "API server did not become ready after initialization"
-        log_error "Check API server status: sudo crictl ps | grep kube-apiserver"
-        log_error "Check kubelet logs: sudo journalctl -u kubelet --no-pager -n 50"
+    # Wait for API server to be fully ready (comprehensive check)
+    log_info "Verifying API server is fully operational..."
+    if ! wait_for_api_server 60; then
+        log_error "API server did not become fully operational after initialization"
+        log_error "The cluster may be in an unstable state."
+        log_error ""
+        log_error "Troubleshooting steps:"
+        log_error "1. Check kubelet: sudo systemctl status kubelet"
+        log_error "2. Check API server container: sudo crictl ps -a | grep kube-apiserver"
+        log_error "3. Check kubelet logs: sudo journalctl -u kubelet --no-pager -n 50"
+        log_error "4. Check system resources: free -h && df -h"
+        log_error "5. Try manual recovery: sudo systemctl restart kubelet && sleep 15"
         return 1
     fi
     
-    log_info "Kubernetes cluster initialized successfully"
+    # Final verification before proceeding
+    log_info "Performing final API server verification..."
+    if ! kubectl get nodes &>/dev/null 2>&1; then
+        log_error "Final verification failed: cannot query nodes"
+        return 1
+    fi
+    
+    if ! kubectl get namespaces &>/dev/null 2>&1; then
+        log_error "Final verification failed: cannot query namespaces"
+        return 1
+    fi
+    
+    log_info "✓ Kubernetes cluster initialized and API server is 100% operational"
 }
 
 configure_cluster() {
@@ -340,15 +469,12 @@ install_cni() {
     log_info "Waiting for Flannel pods to be ready..."
     sleep 5
     
-    # Ensure API server is accessible before checking pods
-    if ! wait_for_api_server 15; then
-        log_warn "API server became unreachable, attempting recovery..."
-        sudo systemctl restart kubelet
-        sleep 10
-        if ! wait_for_api_server 20; then
-            log_error "API server did not recover. Flannel installation may be incomplete."
-            return 1
-        fi
+    # Ensure API server is accessible before checking pods (comprehensive check)
+    log_info "Verifying API server is operational before checking Flannel pods..."
+    if ! wait_for_api_server 30; then
+        log_error "API server is not operational. Cannot verify Flannel installation."
+        log_error "Flannel may have been installed but verification failed."
+        return 1
     fi
     
     local max_wait=60
@@ -632,8 +758,10 @@ main() {
     configure_cluster
     
     show_progress "Waiting for CoreDNS"
+    log_info "Verifying API server is still operational before proceeding..."
     if ! wait_for_api_server 30; then
-        log_error "API server is not stable. Cannot proceed."
+        log_error "API server became unstable. Cannot proceed with CoreDNS setup."
+        log_error "Please fix the API server issue before continuing."
         return 1
     fi
     
@@ -679,24 +807,86 @@ main() {
     log_info "This may affect subsequent installations, but continuing..."
     
     show_progress "Installing Helm"
+    log_info "Verifying API server before Helm installation..."
+    if ! wait_for_api_server 20; then
+        log_error "API server is not stable. Cannot install Helm charts."
+        return 1
+    fi
     install_helm
     
     show_progress "Installing GPU Operator"
+    log_info "Verifying API server before GPU Operator installation..."
+    if ! wait_for_api_server 20; then
+        log_error "API server is not stable. Cannot install GPU Operator."
+        return 1
+    fi
     log_info "This may take 5-10 minutes..."
     install_gpu_operator
     
     show_progress "Installing Prometheus and Grafana"
+    log_info "Verifying API server before Prometheus/Grafana installation..."
+    if ! wait_for_api_server 20; then
+        log_error "API server is not stable. Cannot install Prometheus/Grafana."
+        return 1
+    fi
     log_info "This may take 5-10 minutes..."
     install_prometheus_grafana
     
     show_progress "Configuring DCGM ServiceMonitor"
+    log_info "Verifying API server before ServiceMonitor configuration..."
+    if ! wait_for_api_server 15; then
+        log_error "API server is not stable. Cannot configure ServiceMonitor."
+        return 1
+    fi
     configure_dcgm_service_monitor
     
     show_progress "Verifying Installation"
+    log_info "Final API server verification before installation verification..."
+    if ! wait_for_api_server 20; then
+        log_error "API server is not stable. Installation verification may be incomplete."
+        log_warn "Continuing with verification, but results may be inaccurate..."
+    fi
     log_info "Waiting for components to stabilize..."
     sleep 30
     
     verify_installation
+    
+    # Final comprehensive API server health check before declaring success
+    show_progress "Final API Server Health Check"
+    log_info "Performing final comprehensive API server health check..."
+    if ! wait_for_api_server 30; then
+        log_error "API server health check failed. Installation may be incomplete."
+        log_error "Please verify the cluster is operational before using it."
+        return 1
+    fi
+    
+    # Test all critical Kubernetes APIs
+    log_info "Testing all critical Kubernetes APIs..."
+    if ! kubectl get nodes &>/dev/null 2>&1; then
+        log_error "✗ Nodes API test failed"
+        return 1
+    fi
+    log_info "  ✓ Nodes API working"
+    
+    if ! kubectl get namespaces &>/dev/null 2>&1; then
+        log_error "✗ Namespaces API test failed"
+        return 1
+    fi
+    log_info "  ✓ Namespaces API working"
+    
+    if ! kubectl get pods --all-namespaces &>/dev/null 2>&1; then
+        log_error "✗ Pods API test failed"
+        return 1
+    fi
+    log_info "  ✓ Pods API working"
+    
+    if ! kubectl get services --all-namespaces &>/dev/null 2>&1; then
+        log_error "✗ Services API test failed"
+        return 1
+    fi
+    log_info "  ✓ Services API working"
+    
+    log_info "✓ All critical APIs are operational"
     
     show_progress "Installation Complete!"
     print_access_info
