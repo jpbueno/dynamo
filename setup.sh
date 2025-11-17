@@ -103,15 +103,45 @@ diagnose_api_server() {
     echo ""
 }
 
+wait_for_etcd_stable() {
+    # Wait for etcd to be stable before checking API server
+    local max_attempts=30
+    local attempt=0
+    local consecutive_etcd_ok=0
+    
+    log_info "Waiting for etcd to be stable..."
+    
+    while [ $attempt -lt $max_attempts ]; do
+        ETCD_RUNNING=$(sudo crictl ps 2>/dev/null | grep etcd | awk '{print $1}' | head -1)
+        if [ -n "$ETCD_RUNNING" ]; then
+            consecutive_etcd_ok=$((consecutive_etcd_ok + 1))
+            if [ $consecutive_etcd_ok -ge 3 ]; then
+                log_info "✓ etcd is stable"
+                return 0
+            fi
+        else
+            consecutive_etcd_ok=0
+        fi
+        attempt=$((attempt + 1))
+        sleep 2
+    done
+    
+    log_warn "etcd did not stabilize, but continuing..."
+    return 1
+}
+
 wait_for_api_server() {
     # Wait for API server to be accessible and stable with comprehensive checks
-    local max_attempts=${1:-60}  # Increased default timeout
+    local max_attempts=${1:-90}  # Increased default timeout (60 -> 90)
     local attempt=0
     local consecutive_success=0
     local recovery_attempts=0
     local max_recovery_attempts=3
     
     log_info "Waiting for API server to be accessible and stable..."
+    
+    # First, ensure etcd is stable (API server depends on it)
+    wait_for_etcd_stable
     
     while [ $attempt -lt $max_attempts ]; do
         # Test API server accessibility
@@ -144,10 +174,16 @@ wait_for_api_server() {
                 log_warn "API server became unreachable, attempting recovery #$recovery_attempts..."
                 diagnose_api_server
                 
+                # Ensure etcd is stable before restarting kubelet
+                wait_for_etcd_stable
+                
                 log_info "Restarting kubelet..."
                 sudo systemctl restart kubelet
-                log_info "Waiting 20 seconds for components to stabilize after kubelet restart..."
-                sleep 20
+                log_info "Waiting 30 seconds for components to stabilize after kubelet restart..."
+                sleep 30
+                
+                # Wait for etcd to stabilize again after restart
+                wait_for_etcd_stable
                 
                 # Check if recovery worked
                 if kubectl cluster-info &>/dev/null 2>&1; then
