@@ -927,17 +927,6 @@ verify_installation() {
         return 0
     fi
 }
-    echo "=== GPU Operator ==="
-    kubectl get pods -n $GPU_OPERATOR_NAMESPACE
-    
-    echo ""
-    echo "=== Prometheus/Grafana ==="
-    kubectl get pods -n $MONITORING_NAMESPACE
-    
-    echo ""
-    echo "=== GPU Resources ==="
-    kubectl get nodes -o json | jq -r '.items[0].status.capacity | to_entries[] | select(.key | contains("gpu"))' 2>/dev/null || echo "No GPU resources detected yet"
-}
 
 print_access_info() {
     echo ""
