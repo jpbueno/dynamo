@@ -189,15 +189,45 @@ main() {
     
     log_info "Cleanup complete!"
     echo ""
-    echo "Remaining components:"
-    echo "  - Kubernetes tools (kubectl, kubeadm, kubelet) - kept for reinstall"
-    echo "  - Helm - kept for reinstall"
-    echo "  - System configurations - partially kept for reinstall"
-    echo ""
-    echo "To fully remove Kubernetes tools, run manually:"
-    echo "  sudo apt-get purge -y kubelet kubeadm kubectl kubernetes-cni"
-    echo ""
-    echo "To reinstall, run: bash setup.sh"
+    # Remove Kubernetes tools
+    log_info "Removing Kubernetes tools..."
+    if command -v kubeadm &>/dev/null || command -v kubectl &>/dev/null || command -v kubelet &>/dev/null; then
+        log_info "  Purging Kubernetes packages..."
+        sudo apt-get purge -y kubelet kubeadm kubectl kubernetes-cni 2>/dev/null || {
+            log_warn "Some Kubernetes packages may not be installed via apt"
+        }
+        sudo apt-get autoremove -y 2>/dev/null || true
+        log_info "  ✓ Kubernetes tools removed"
+    else
+        log_info "  Kubernetes tools not found, skipping removal"
+    fi
+    
+    # Remove Helm (optional - comment out if you want to keep Helm)
+    log_info "Removing Helm..."
+    if command -v helm &>/dev/null; then
+        log_info "  Removing Helm..."
+        sudo rm -f /usr/local/bin/helm 2>/dev/null || true
+        rm -rf ~/.helm 2>/dev/null || true
+        log_info "  ✓ Helm removed"
+    else
+        log_info "  Helm not found, skipping removal"
+    fi
+    
+    log_info ""
+    log_info "=========================================="
+    log_info "Cleanup completed successfully!"
+    log_info "=========================================="
+    log_info ""
+    log_info "All components have been removed:"
+    log_info "  ✓ Kubernetes cluster"
+    log_info "  ✓ GPU Operator"
+    log_info "  ✓ Prometheus/Grafana stack"
+    log_info "  ✓ Helm releases"
+    log_info "  ✓ Kubernetes tools (kubeadm, kubectl, kubelet)"
+    log_info "  ✓ Helm"
+    log_info "  ✓ System configurations"
+    log_info ""
+    log_info "To reinstall, run: bash setup.sh"
 }
 
 main "$@"

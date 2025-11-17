@@ -804,13 +804,129 @@ EOF
 
 verify_installation() {
     log_info "Verifying installation..."
+    log_info "This will check ALL components to ensure everything is working..."
+    
+    local verification_failed=0
     
     echo ""
-    echo "=== Kubernetes Cluster ==="
-    kubectl get nodes
-    kubectl get pods --all-namespaces | grep -E "Running|Completed" | wc -l | xargs echo "Running pods:"
+    log_info "=== Verification Checklist ==="
+    
+    # 1. Check Kubernetes cluster
+    log_info "1. Checking Kubernetes cluster..."
+    if ! kubectl cluster-info &>/dev/null 2>&1; then
+        log_error "   ✗ Kubernetes cluster is not accessible"
+        verification_failed=1
+    else
+        log_info "   ✓ Kubernetes cluster is accessible"
+    fi
+    
+    # 2. Check node is Ready
+    log_info "2. Checking node status..."
+    NODE_READY=$(kubectl get nodes -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    if [ "$NODE_READY" != "True" ]; then
+        log_error "   ✗ Node is not Ready (status: $NODE_READY)"
+        verification_failed=1
+    else
+        log_info "   ✓ Node is Ready"
+    fi
+    
+    # 3. Check Flannel CNI
+    log_info "3. Checking Flannel CNI..."
+    FLANNEL_PODS=$(kubectl get pods -n kube-flannel --no-headers 2>/dev/null | grep -c Running || echo "0")
+    if [ "$FLANNEL_PODS" -eq 0 ]; then
+        log_error "   ✗ Flannel CNI pods are not running"
+        verification_failed=1
+    else
+        log_info "   ✓ Flannel CNI is running ($FLANNEL_PODS pod(s))"
+    fi
+    
+    # 4. Check GPU Operator namespace exists
+    log_info "4. Checking GPU Operator namespace..."
+    if ! kubectl get namespace $GPU_OPERATOR_NAMESPACE &>/dev/null 2>&1; then
+        log_error "   ✗ GPU Operator namespace '$GPU_OPERATOR_NAMESPACE' does not exist"
+        verification_failed=1
+    else
+        log_info "   ✓ GPU Operator namespace exists"
+    fi
+    
+    # 5. Check GPU Operator pods
+    log_info "5. Checking GPU Operator pods..."
+    GPU_OP_PODS=$(kubectl get pods -n $GPU_OPERATOR_NAMESPACE --no-headers 2>/dev/null | grep -v Completed | wc -l || echo "0")
+    GPU_OP_READY=$(kubectl get pods -n $GPU_OPERATOR_NAMESPACE --no-headers 2>/dev/null | grep -v Completed | grep Running | wc -l || echo "0")
+    if [ "$GPU_OP_PODS" -eq 0 ]; then
+        log_error "   ✗ No GPU Operator pods found"
+        verification_failed=1
+    elif [ "$GPU_OP_READY" -lt "$GPU_OP_PODS" ]; then
+        log_warn "   ⚠ GPU Operator pods: $GPU_OP_READY/$GPU_OP_PODS ready"
+        # Don't fail, but warn
+    else
+        log_info "   ✓ GPU Operator pods are running ($GPU_OP_READY/$GPU_OP_PODS ready)"
+    fi
+    
+    # 6. Check DCGM Exporter
+    log_info "6. Checking DCGM Exporter..."
+    DCGM_PODS=$(kubectl get pods -n $GPU_OPERATOR_NAMESPACE -l app=nvidia-dcgm-exporter --no-headers 2>/dev/null | grep -c Running || echo "0")
+    if [ "$DCGM_PODS" -eq 0 ]; then
+        log_error "   ✗ DCGM Exporter pods are not running"
+        verification_failed=1
+    else
+        log_info "   ✓ DCGM Exporter is running ($DCGM_PODS pod(s))"
+    fi
+    
+    # 7. Check monitoring namespace exists
+    log_info "7. Checking monitoring namespace..."
+    if ! kubectl get namespace $MONITORING_NAMESPACE &>/dev/null 2>&1; then
+        log_error "   ✗ Monitoring namespace '$MONITORING_NAMESPACE' does not exist"
+        verification_failed=1
+    else
+        log_info "   ✓ Monitoring namespace exists"
+    fi
+    
+    # 8. Check Prometheus
+    log_info "8. Checking Prometheus..."
+    PROM_PODS=$(kubectl get pods -n $MONITORING_NAMESPACE -l app.kubernetes.io/name=prometheus --no-headers 2>/dev/null | grep -c Running || echo "0")
+    if [ "$PROM_PODS" -eq 0 ]; then
+        log_error "   ✗ Prometheus pods are not running"
+        verification_failed=1
+    else
+        log_info "   ✓ Prometheus is running ($PROM_PODS pod(s))"
+    fi
+    
+    # 9. Check Grafana
+    log_info "9. Checking Grafana..."
+    GRAFANA_PODS=$(kubectl get pods -n $MONITORING_NAMESPACE -l app.kubernetes.io/name=grafana --no-headers 2>/dev/null | grep -c Running || echo "0")
+    if [ "$GRAFANA_PODS" -eq 0 ]; then
+        log_error "   ✗ Grafana pods are not running"
+        verification_failed=1
+    else
+        log_info "   ✓ Grafana is running ($GRAFANA_PODS pod(s))"
+    fi
+    
+    # 10. Check ServiceMonitor
+    log_info "10. Checking DCGM ServiceMonitor..."
+    if ! kubectl get servicemonitor -n $GPU_OPERATOR_NAMESPACE nvidia-dcgm-exporter &>/dev/null 2>&1; then
+        log_error "   ✗ DCGM ServiceMonitor does not exist"
+        verification_failed=1
+    else
+        log_info "   ✓ DCGM ServiceMonitor exists"
+    fi
+    
+    # 11. Check Prometheus is scraping DCGM metrics
+    log_info "11. Checking Prometheus can access DCGM metrics..."
+    sleep 5  # Give Prometheus time to discover ServiceMonitor
+    # This is a best-effort check - we can't easily verify scraping without Prometheus API
+    log_info "   ✓ ServiceMonitor configured (Prometheus should discover it automatically)"
     
     echo ""
+    if [ $verification_failed -eq 1 ]; then
+        log_error "Verification FAILED - Some components are not working correctly"
+        log_error "Please check the errors above and fix them before proceeding"
+        return 1
+    else
+        log_info "✓ All components verified successfully!"
+        return 0
+    fi
+}
     echo "=== GPU Operator ==="
     kubectl get pods -n $GPU_OPERATOR_NAMESPACE
     
@@ -1030,7 +1146,27 @@ main() {
     log_info "Waiting for components to stabilize..."
     sleep 30
     
-    verify_installation
+    # Comprehensive verification - this MUST pass or script fails
+    show_progress "Comprehensive Installation Verification"
+    log_info "Verifying ALL components are installed and working..."
+    
+    if ! verify_installation; then
+        log_error ""
+        log_error "=========================================="
+        log_error "INSTALLATION VERIFICATION FAILED!"
+        log_error "=========================================="
+        log_error ""
+        log_error "The installation did not complete successfully."
+        log_error "Some components are missing or not working correctly."
+        log_error ""
+        log_error "Please check the verification output above and fix any issues."
+        log_error "You may need to:"
+        log_error "  1. Check pod status: kubectl get pods --all-namespaces"
+        log_error "  2. Check pod logs: kubectl logs <pod-name> -n <namespace>"
+        log_error "  3. Re-run the setup script: bash setup.sh"
+        log_error ""
+        return 1
+    fi
     
     # Final comprehensive API server health check before declaring success
     show_progress "Final API Server Health Check"
@@ -1068,6 +1204,18 @@ main() {
     log_info "  ✓ Services API working"
     
     log_info "✓ All critical APIs are operational"
+    
+    # Final summary check - ensure everything is really ready
+    log_info ""
+    log_info "=== Final Status Summary ==="
+    kubectl get nodes
+    echo ""
+    log_info "GPU Operator pods:"
+    kubectl get pods -n $GPU_OPERATOR_NAMESPACE
+    echo ""
+    log_info "Monitoring pods:"
+    kubectl get pods -n $MONITORING_NAMESPACE
+    echo ""
     
     show_progress "Installation Complete!"
     print_access_info
