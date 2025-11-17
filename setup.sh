@@ -133,7 +133,8 @@ wait_for_api_server() {
                 
                 log_info "Restarting kubelet..."
                 sudo systemctl restart kubelet
-                sleep 10
+                log_info "Waiting 20 seconds for components to stabilize after kubelet restart..."
+                sleep 20
                 
                 # Check if recovery worked
                 if kubectl cluster-info &>/dev/null 2>&1; then
@@ -173,8 +174,38 @@ wait_for_pods_ready() {
     local check_interval=${4:-10}  # Default 10 seconds
     local max_attempts=$((timeout / check_interval))
     local attempt=0
+    local api_failures=0
+    local max_api_failures=5
     
     while [ $attempt -lt $max_attempts ]; do
+        # Check API server accessibility first
+        if ! kubectl cluster-info &>/dev/null 2>&1; then
+            api_failures=$((api_failures + 1))
+            if [ $api_failures -ge $max_api_failures ]; then
+                log_warn "API server became unreachable during pod wait. Attempting recovery..."
+                diagnose_api_server
+                log_info "Restarting kubelet to recover API server..."
+                sudo systemctl restart kubelet
+                sleep 10
+                
+                # Wait for API server to recover
+                if wait_for_api_server 30; then
+                    log_info "✓ API server recovered, continuing pod wait..."
+                    api_failures=0
+                else
+                    log_error "API server recovery failed. Cannot continue waiting for pods."
+                    return 1
+                fi
+            else
+                log_warn "API server temporarily unreachable (failure $api_failures/$max_api_failures), retrying..."
+                sleep 5
+                attempt=$((attempt + 1))
+                continue
+            fi
+        else
+            api_failures=0  # Reset failure counter on success
+        fi
+        
         READY=$(kubectl get pods -n "$namespace" $selector --no-headers 2>/dev/null | grep -v "Completed" | awk '{print $2}' | grep -E "^[0-9]+/[0-9]+$" | wc -l)
         TOTAL=$(kubectl get pods -n "$namespace" $selector --no-headers 2>/dev/null | grep -v "Completed" | wc -l)
         
@@ -463,8 +494,36 @@ install_cni() {
         fi
     fi
     
+    # Ensure API server is accessible before applying Flannel
+    log_info "Verifying API server is operational before installing Flannel..."
+    if ! wait_for_api_server 30; then
+        log_error "API server is not operational. Cannot install Flannel."
+        return 1
+    fi
+    
     log_info "Applying Flannel CNI manifest..."
-    kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+    local flannel_apply_attempts=0
+    local max_flannel_apply_attempts=3
+    
+    while [ $flannel_apply_attempts -lt $max_flannel_apply_attempts ]; do
+        if kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml 2>/dev/null; then
+            log_info "✓ Flannel manifest applied successfully"
+            break
+        else
+            flannel_apply_attempts=$((flannel_apply_attempts + 1))
+            if [ $flannel_apply_attempts -ge $max_flannel_apply_attempts ]; then
+                log_error "Failed to apply Flannel manifest after $max_flannel_apply_attempts attempts"
+                return 1
+            fi
+            
+            log_warn "Flannel apply failed (attempt $flannel_apply_attempts/$max_flannel_apply_attempts), checking API server..."
+            if ! wait_for_api_server 20; then
+                log_error "API server recovery failed"
+                return 1
+            fi
+            sleep 5
+        fi
+    done
     
     log_info "Waiting for Flannel pods to be ready..."
     sleep 5
@@ -487,12 +546,41 @@ install_cni() {
         waited=$((waited + 2))
     done
     
-    kubectl wait --for=condition=ready pod -l app=flannel -n kube-flannel --timeout=300s || {
+    # Wait for Flannel pods with API server recovery
+    local flannel_wait_attempts=0
+    local max_flannel_wait=60
+    while [ $flannel_wait_attempts -lt $max_flannel_wait ]; do
+        # Check API server before kubectl wait
+        if ! kubectl cluster-info &>/dev/null 2>&1; then
+            log_warn "API server became unreachable during Flannel wait, attempting recovery..."
+            diagnose_api_server
+            sudo systemctl restart kubelet
+            sleep 10
+            if ! wait_for_api_server 30; then
+                log_error "API server recovery failed"
+                return 1
+            fi
+            continue
+        fi
+        
+        # Try kubectl wait with short timeout
+        if kubectl wait --for=condition=ready pod -l app=flannel -n kube-flannel --timeout=10s 2>/dev/null; then
+            log_info "✓ Flannel pods are ready"
+            break
+        fi
+        
+        flannel_wait_attempts=$((flannel_wait_attempts + 1))
+        sleep 5
+    done
+    
+    if [ $flannel_wait_attempts -ge $max_flannel_wait ]; then
         log_warn "Flannel pods may not be ready yet, checking status..."
-        kubectl get pods -n kube-flannel 2>/dev/null || {
-            log_warn "Cannot check Flannel pods (API server may be unreachable)"
-        }
-    }
+        if kubectl cluster-info &>/dev/null 2>&1; then
+            kubectl get pods -n kube-flannel 2>/dev/null || true
+        else
+            log_warn "Cannot check Flannel pods (API server is unreachable)"
+        fi
+    fi
     
     log_info "Waiting for node to become Ready (CNI initialization)..."
     local max_attempts=30
@@ -769,6 +857,18 @@ main() {
     # CoreDNS may not exist immediately after cluster init
     local coredns_attempts=0
     while [ $coredns_attempts -lt 30 ]; do
+        # Check API server before each iteration
+        if ! kubectl cluster-info &>/dev/null 2>&1; then
+            log_warn "API server became unreachable, attempting recovery..."
+            diagnose_api_server
+            sudo systemctl restart kubelet
+            sleep 10
+            if ! wait_for_api_server 30; then
+                log_error "API server recovery failed during CoreDNS wait"
+                return 1
+            fi
+        fi
+        
         if kubectl get pods -n kube-system -l k8s-app=kube-dns --no-headers 2>/dev/null | grep -q .; then
             break
         fi
@@ -777,9 +877,40 @@ main() {
     done
     
     if kubectl get pods -n kube-system -l k8s-app=kube-dns --no-headers 2>/dev/null | grep -q .; then
-        kubectl wait --for=condition=ready pod -l k8s-app=kube-dns -n kube-system --timeout=300s || {
-            log_warn "CoreDNS pods not ready yet, but continuing..."
-        }
+        # Wait for CoreDNS pods with API server recovery
+        local coredns_wait_attempts=0
+        local max_coredns_wait=60
+        while [ $coredns_wait_attempts -lt $max_coredns_wait ]; do
+            # Check API server before kubectl wait
+            if ! kubectl cluster-info &>/dev/null 2>&1; then
+                log_warn "API server became unreachable during CoreDNS wait, attempting recovery..."
+                diagnose_api_server
+                sudo systemctl restart kubelet
+                sleep 10
+                if ! wait_for_api_server 30; then
+                    log_error "API server recovery failed"
+                    return 1
+                fi
+                continue
+            fi
+            
+            # Try kubectl wait with short timeout
+            if kubectl wait --for=condition=ready pod -l k8s-app=kube-dns -n kube-system --timeout=10s 2>/dev/null; then
+                log_info "✓ CoreDNS pods are ready"
+                break
+            fi
+            
+            coredns_wait_attempts=$((coredns_wait_attempts + 1))
+            sleep 5
+        done
+        
+        if [ $coredns_wait_attempts -ge $max_coredns_wait ]; then
+            log_warn "CoreDNS pods did not become ready within expected time"
+            if kubectl cluster-info &>/dev/null 2>&1; then
+                kubectl get pods -n kube-system -l k8s-app=kube-dns 2>/dev/null || true
+            fi
+            log_info "Continuing with installation..."
+        fi
     else
         log_warn "CoreDNS pods not found yet, but continuing..."
     fi
