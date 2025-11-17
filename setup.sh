@@ -200,7 +200,8 @@ wait_for_api_server() {
     done
     
     # Final diagnosis before giving up
-    log_error "API server did not become stable after $((max_attempts * 2)) seconds"
+    local total_seconds=$((max_attempts * 2))
+    log_error "API server did not become stable after ${total_seconds} seconds (${max_attempts} attempts)"
     log_error "Performing final diagnostics..."
     diagnose_api_server
     
@@ -896,7 +897,7 @@ main() {
     
     show_progress "Waiting for CoreDNS"
     log_info "Verifying API server is still operational before proceeding..."
-    if ! wait_for_api_server 30; then
+    if ! wait_for_api_server 60; then
         log_error "API server became unstable. Cannot proceed with CoreDNS setup."
         log_error "Please fix the API server issue before continuing."
         return 1
