@@ -48,31 +48,37 @@ diagnose_api_server() {
         sleep 5
     fi
     
+    # Check etcd first (API server depends on it)
+    log_info "2. Checking etcd container..."
+    ETCD_RUNNING=$(sudo crictl ps 2>/dev/null | grep etcd | awk '{print $1}' | head -1)
+    ETCD_EXITED=$(sudo crictl ps -a 2>/dev/null | grep etcd | grep Exited | tail -1 | awk '{print $1}')
+    
+    if [ -n "$ETCD_RUNNING" ]; then
+        log_info "   ✓ etcd is running: $ETCD_RUNNING"
+    elif [ -n "$ETCD_EXITED" ]; then
+        log_error "   ✗ etcd container exited, checking logs..."
+        sudo crictl logs --tail 30 "$ETCD_EXITED" 2>/dev/null | tail -15 || true
+        log_warn "   etcd must be running for API server to start"
+    else
+        log_warn "   ⚠ etcd container not found"
+    fi
+    
     # Check API server container
-    log_info "2. Checking API server container..."
-    API_CONTAINER=$(sudo crictl ps -a 2>/dev/null | grep kube-apiserver | grep -v "Exited" | awk '{print $1}' | head -1)
+    log_info "3. Checking API server container..."
+    API_CONTAINER=$(sudo crictl ps 2>/dev/null | grep kube-apiserver | awk '{print $1}' | head -1)
     if [ -n "$API_CONTAINER" ]; then
         log_info "   ✓ API server container found: $API_CONTAINER"
         log_info "   Checking container logs..."
         sudo crictl logs --tail 20 "$API_CONTAINER" 2>/dev/null | tail -5 || true
     else
-        log_warn "   ⚠ API server container not found or exited"
+        log_warn "   ⚠ API server container not running"
         log_info "   Checking exited containers..."
-        EXITED=$(sudo crictl ps -a 2>/dev/null | grep kube-apiserver | grep Exited | head -1)
+        EXITED=$(sudo crictl ps -a 2>/dev/null | grep kube-apiserver | grep Exited | tail -1)
         if [ -n "$EXITED" ]; then
             log_warn "   Found exited API server container, checking logs..."
             EXITED_ID=$(echo "$EXITED" | awk '{print $1}')
-            sudo crictl logs --tail 30 "$EXITED_ID" 2>/dev/null | tail -10 || true
+            sudo crictl logs --tail 30 "$EXITED_ID" 2>/dev/null | tail -15 || true
         fi
-    fi
-    
-    # Check etcd
-    log_info "3. Checking etcd container..."
-    ETCD_CONTAINER=$(sudo crictl ps 2>/dev/null | grep etcd | awk '{print $1}' | head -1)
-    if [ -n "$ETCD_CONTAINER" ]; then
-        log_info "   ✓ etcd is running"
-    else
-        log_warn "   ⚠ etcd container not found"
     fi
     
     # Check port 6443
@@ -83,9 +89,16 @@ diagnose_api_server() {
         log_warn "   ⚠ Port 6443 is not listening"
     fi
     
+    # Check system resources
+    log_info "5. Checking system resources..."
+    MEM_AVAIL=$(free -m | awk '/^Mem:/ {print $7}')
+    DISK_AVAIL=$(df -h / | awk 'NR==2 {print $4}')
+    log_info "   Available memory: ${MEM_AVAIL}MB"
+    log_info "   Available disk: $DISK_AVAIL"
+    
     # Check kubelet logs
-    log_info "5. Recent kubelet errors..."
-    sudo journalctl -u kubelet --no-pager -n 10 2>/dev/null | grep -i error | tail -3 || log_info "   No recent errors"
+    log_info "6. Recent kubelet errors..."
+    sudo journalctl -u kubelet --no-pager -n 20 2>/dev/null | grep -iE "error|fail" | tail -5 || log_info "   No recent errors"
     
     echo ""
 }
